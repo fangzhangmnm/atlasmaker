@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#F6F4EF" />
+    <meta name="theme-color" content="#121110" media="(prefers-color-scheme: dark)" />
+    <script>
+      // Theme guard
+      (function () {
+        try {
+          var saved = localStorage.getItem("atlasmaker.theme");
+          if (saved === "day" || saved === "night" || saved === "auto") {
+            document.documentElement.setAttribute("data-theme", saved);
+          }
+        } catch (_) {}
+      })();
+      // PC 也兜个底：任何脚本错误顶上糊一条红条
+      (function () {
+        function show(text) {
+          var bar = document.getElementById("__errBar");
+          if (!bar) {
+            bar = document.createElement("div");
+            bar.id = "__errBar";
+            bar.style.cssText = "position:fixed;left:0;right:0;top:0;z-index:9999;padding:8px 12px;background:#c0392b;color:#fff;font:13px/1.4 system-ui;white-space:pre-wrap;word-break:break-word;max-height:50vh;overflow:auto";
+            bar.addEventListener("click", function () { bar.remove(); });
+            (document.body || document.documentElement).appendChild(bar);
+          }
+          bar.textContent = "⚠ " + text + "  (点击关闭)";
+        }
+        window.__am_showFatal = show;
+        window.addEventListener("error", function (e) {
+          var m = (e && e.message) || (e && e.error && (e.error.message || String(e.error))) || "脚本错误";
+          var src = e && e.filename ? " (" + e.filename.split("/").pop() + ":" + e.lineno + ")" : "";
+          show(m + src);
+        });
+        window.addEventListener("unhandledrejection", function (e) {
+          var r = e && e.reason;
+          show((r && r.message) || String(r || "promise rejection"));
+        });
+      })();
+    </script>
+    <meta name="color-scheme" content="light dark" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="AtlasMaker" />
+    <title>AtlasMaker</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <!-- 无限工作台。pan/zoom 直接作用在 #world 的 transform 上。
+         所有对象（图片、viewport）作为绝对定位的子节点，坐标是「世界单位」。 -->
+    <div id="board" class="board">
+      <div id="world" class="world"></div>
+      <!-- selection overlay 后期画选框 / 把手 -->
+      <svg id="overlay" class="overlay" xmlns="http://www.w3.org/2000/svg"></svg>
+    </div>
+
+    <!-- 顶栏 -->
+    <header class="top-bar" id="topBar">
+      <div class="tool-group" role="group" aria-label="工具">
+        <button class="tool" id="toolSelect" type="button" data-tool="select" aria-pressed="true" title="选择 (V)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 3l14 8-6 2-2 6L5 3z"></path>
+          </svg>
+        </button>
+        <button class="tool" id="toolHand" type="button" data-tool="hand" title="平移 (H / Space)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M18 11V6a2 2 0 0 0-4 0v5"></path>
+            <path d="M14 10V4a2 2 0 0 0-4 0v6"></path>
+            <path d="M10 10.5V6a2 2 0 0 0-4 0v9"></path>
+            <path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-1-5.6-2.8l-3.4-5.4a2 2 0 0 1 3.4-2L8 14"></path>
+          </svg>
+        </button>
+        <button class="tool" id="toolViewport" type="button" data-tool="viewport" title="新建 viewport (R)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="6" width="18" height="12" rx="1"></rect>
+            <circle cx="12" cy="12" r="2"></circle>
+          </svg>
+        </button>
+      </div>
+
+      <div class="spacer"></div>
+
+      <button class="tool" id="fitButton" type="button" title="适应所有 (0)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="3" width="18" height="18" rx="1"></rect>
+          <path d="M3 8h4M3 16h4M8 3v4M16 3v4M3 8L8 3M3 16l5 5M21 8L16 3M21 16l-5 5"></path>
+        </svg>
+      </button>
+
+      <button class="tool" id="themeButton" type="button" title="主题">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+        </svg>
+      </button>
+    </header>
+
+    <!-- HUD -->
+    <div class="hud" id="hud">
+      <span id="zoomLabel">100%</span>
+      <span class="sep" aria-hidden="true">·</span>
+      <span id="countLabel">0 项</span>
+      <span class="sep" aria-hidden="true">·</span>
+      <span id="statusLabel">空白工作台 — Ctrl+V 粘贴图片</span>
+    </div>
+
+    <!-- viewport 属性浮窗（选中 viewport 时显示） -->
+    <div id="viewportPanel" class="float-panel hidden" role="dialog" aria-label="viewport 属性">
+      <div class="float-panel-head">
+        <span class="float-panel-title">Viewport</span>
+        <button id="viewportPanelClose" class="close-x" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="float-panel-body">
+        <label class="row"><span class="row-label">分辨率</span>
+          <input id="vpResW" type="number" min="1" max="8192" step="1" value="1024" />
+          <span class="row-sep">×</span>
+          <input id="vpResH" type="number" min="1" max="8192" step="1" value="1024" />
+        </label>
+        <label class="row"><span class="row-label">插值</span>
+          <select id="vpInterp">
+            <option value="linear">线性（默认）</option>
+            <option value="nearest">最近（像素画）</option>
+          </select>
+        </label>
+        <label class="row"><span class="row-label">绑定</span>
+          <input id="vpBinding" type="text" placeholder="Blender texture 名（暂未启用）" disabled />
+        </label>
+        <div class="row">
+          <button class="sheet-action" id="vpExport" type="button">导出 PNG</button>
+          <button class="sheet-action ghost" id="vpDelete" type="button">删除</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 更新 toast -->
+    <div id="updateToast" class="toast hidden" role="status" aria-live="polite">
+      <span>有新版本</span>
+      <button id="updateToastReload" type="button">刷新</button>
+      <button id="updateToastDismiss" type="button" class="dismiss" aria-label="忽略">×</button>
+    </div>
+
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>

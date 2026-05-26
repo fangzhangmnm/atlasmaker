@@ -1,0 +1,15 @@
+{
+  "name": "AtlasMaker",
+  "short_name": "AtlasMaker",
+  "description": "PC 上的无限参考板 + texture atlas 工具。粘贴图片、整理参考、用 viewport 框出 Blender 贴图。",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f6f4ef",
+  "theme_color": "#f6f4ef",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
