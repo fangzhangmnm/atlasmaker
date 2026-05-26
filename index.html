@@ -47,14 +47,16 @@
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./src/styles.css" />
+    <!-- 版本号 SSoT：早于 app.js，给 window.ATLASMAKER_VERSION -->
+    <script src="./src/version.js"></script>
   </head>
   <body>
     <!-- 无限工作台。pan/zoom 直接作用在 #world 的 transform 上。
          所有对象（图片、viewport）作为绝对定位的子节点，坐标是「世界单位」。 -->
     <div id="board" class="board">
       <div id="world" class="world"></div>
-      <!-- selection overlay 后期画选框 / 把手 -->
-      <svg id="overlay" class="overlay" xmlns="http://www.w3.org/2000/svg"></svg>
+      <!-- overlay 用 div，里面画选框 + 4 个角把手；屏幕 px，永远清晰 -->
+      <div id="overlay" class="overlay"></div>
     </div>
 
     <!-- 顶栏 -->
@@ -73,10 +75,12 @@
             <path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-1-5.6-2.8l-3.4-5.4a2 2 0 0 1 3.4-2L8 14"></path>
           </svg>
         </button>
-        <button class="tool" id="toolViewport" type="button" data-tool="viewport" title="新建 viewport (R)">
+        <button class="tool" id="toolViewport" type="button" data-tool="viewport" title="新建 viewport（拖框框出输出范围，R）">
+          <!-- 虚线框 + 角标，区别于「实心矩形」 -->
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="3" y="6" width="18" height="12" rx="1"></rect>
-            <circle cx="12" cy="12" r="2"></circle>
+            <path d="M4 8V5h3M20 8V5h-3M4 16v3h3M20 16v3h-3" />
+            <path d="M11 12h2" />
+            <path d="M12 11v2" />
           </svg>
         </button>
       </div>
@@ -104,6 +108,8 @@
       <span id="countLabel">0 项</span>
       <span class="sep" aria-hidden="true">·</span>
       <span id="statusLabel">空白工作台 — Ctrl+V 粘贴图片</span>
+      <span class="sep" aria-hidden="true">·</span>
+      <span id="versionLabel" class="version">v?</span>
     </div>
 
     <!-- viewport 属性浮窗（选中 viewport 时显示） -->
@@ -117,6 +123,7 @@
           <input id="vpResW" type="number" min="1" max="8192" step="1" value="1024" />
           <span class="row-sep">×</span>
           <input id="vpResH" type="number" min="1" max="8192" step="1" value="1024" />
+          <button id="vpAspectLock" class="lock-btn" type="button" aria-pressed="true" title="锁定 rect 与分辨率同纵横比">🔒</button>
         </label>
         <label class="row"><span class="row-label">插值</span>
           <select id="vpInterp">
@@ -127,18 +134,64 @@
         <label class="row"><span class="row-label">绑定</span>
           <input id="vpBinding" type="text" placeholder="Blender texture 名（暂未启用）" disabled />
         </label>
+        <div class="row z-row">
+          <button class="z-btn" id="vpZTop" type="button" title="顶层 (Ctrl+Shift+])">⤒</button>
+          <button class="z-btn" id="vpZUp" type="button" title="上移 (Ctrl+])">↑</button>
+          <button class="z-btn" id="vpZDown" type="button" title="下移 (Ctrl+[)">↓</button>
+          <button class="z-btn" id="vpZBottom" type="button" title="底层 (Ctrl+Shift+[)">⤓</button>
+        </div>
         <div class="row">
           <button class="sheet-action" id="vpExport" type="button">导出 PNG</button>
+          <button class="sheet-action" id="vpCopy" type="button">复制到剪贴板</button>
+        </div>
+        <div class="row">
           <button class="sheet-action ghost" id="vpDelete" type="button">删除</button>
         </div>
       </div>
     </div>
 
+    <!-- 图片属性浮窗 -->
+    <div id="imagePanel" class="float-panel hidden" role="dialog" aria-label="图片属性">
+      <div class="float-panel-head">
+        <span class="float-panel-title">图片</span>
+        <button id="imagePanelClose" class="close-x" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="float-panel-body">
+        <div class="row"><span class="row-label">原图</span>
+          <span id="imgNaturalLabel" class="row-value">—</span>
+        </div>
+        <div class="row"><span class="row-label">显示</span>
+          <span id="imgRectLabel" class="row-value">—</span>
+          <button id="imgAspectLock" class="lock-btn" type="button" aria-pressed="true" title="锁定纵横比（拖角时保持）">🔒</button>
+        </div>
+        <label class="row"><span class="row-label">插值</span>
+          <select id="imgInterp">
+            <option value="linear">线性（默认）</option>
+            <option value="nearest">最近（像素画）</option>
+          </select>
+        </label>
+        <div class="row z-row">
+          <button class="z-btn" id="imgZTop" type="button" title="顶层 (Ctrl+Shift+])">⤒</button>
+          <button class="z-btn" id="imgZUp" type="button" title="上移 (Ctrl+])">↑</button>
+          <button class="z-btn" id="imgZDown" type="button" title="下移 (Ctrl+[)">↓</button>
+          <button class="z-btn" id="imgZBottom" type="button" title="底层 (Ctrl+Shift+[)">⤓</button>
+        </div>
+        <div class="row">
+          <button class="sheet-action ghost" id="imgDelete" type="button">删除</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 短 toast：操作结果反馈 -->
+    <div id="actionToast" class="toast hidden" role="status" aria-live="polite">
+      <span id="actionToastText"></span>
+    </div>
+
     <!-- 更新 toast -->
     <div id="updateToast" class="toast hidden" role="status" aria-live="polite">
       <span>有新版本</span>
-      <button id="updateToastReload" type="button">刷新</button>
-      <button id="updateToastDismiss" type="button" class="dismiss" aria-label="忽略">×</button>
+      <button id="updateReloadButton" type="button">刷新</button>
+      <button id="updateDismissButton" type="button" class="dismiss" aria-label="忽略">×</button>
     </div>
 
     <script type="module" src="./src/app.js"></script>

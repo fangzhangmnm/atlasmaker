@@ -1,7 +1,11 @@
-// SW: cache-first + 后台 revalidate + 新版本 toast。改文件前 bump CACHE_VERSION。
+// SW: cache-first + 后台 revalidate + 新版本 toast。
+// 版本号 SSoT 在 ./src/version.js，bump 那一个文件就行。
 // AtlasMaker 一期：无任何跨源请求；OneDrive/MSAL 引入时再扩。
+//
+// 4 条更新检测路径见 WebPaint/docs/pwa-update-detection.md。
 
-const CACHE_VERSION = "v0-2026-05-26";
+importScripts("./src/version.js");
+const CACHE_VERSION = self.ATLASMAKER_VERSION;
 const CACHE_NAME = `atlasmaker-${CACHE_VERSION}`;
 
 const PRECACHE_URLS = [
@@ -9,6 +13,7 @@ const PRECACHE_URLS = [
   "./index.html",
   "./manifest.webmanifest",
   "./icon.svg",
+  "./src/version.js",
   "./src/styles.css",
   "./src/app.js",
   "./src/board.js",
@@ -37,10 +42,10 @@ self.addEventListener("activate", (event) => {
   })());
 });
 
-let updateAnnounced = false;
+let updateAnnouncedThisLoad = false;
 async function notifyUpdate(url) {
-  if (updateAnnounced) return;
-  updateAnnounced = true;
+  if (updateAnnouncedThisLoad) return;
+  updateAnnouncedThisLoad = true;
   const clients = await self.clients.matchAll({ includeUncontrolled: true });
   for (const c of clients) c.postMessage({ type: "asset-updated", url });
 }
@@ -63,6 +68,7 @@ self.addEventListener("fetch", (event) => {
           const fL = resp.headers.get("content-length");
           const changed = (cE && fE && cE !== fE) || (!cE && cL && fL && cL !== fL);
           if (changed) notifyUpdate(req.url).catch(() => {});
+          // 顺便：notifyUpdate 用 updateAnnouncedThisLoad 守一次
         }
         cache.put(req, resp.clone()).catch(() => {});
       }

@@ -45,11 +45,13 @@ The viewport idea has plenty of room. On the roadmap:
 | - | - |
 | Paste image | `Ctrl+V` |
 | Move object | Left-drag |
+| Resize | Drag any of 8 handles — corners keep aspect, edges stretch |
+| Duplicate | `Ctrl+D` |
 | Pan | Middle-drag, or hold `Space` and drag, or `H` then drag |
 | Zoom | Mouse wheel (cursor is the anchor; hold `Ctrl` for coarser) |
 | New viewport | `R` then drag a rectangle (or click for a default 512×512) |
 | Fit all to screen | `0` |
-| Delete selection | `Delete` / `Backspace` |
+| Delete selection | `X`, `Delete`, or `Backspace` |
 | Deselect | `Esc` |
 
 ## Running locally

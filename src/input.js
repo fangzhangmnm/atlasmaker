@@ -69,18 +69,24 @@ export class Input {
       this._marqueeState = { x0: w.x, y0: w.y, node: null };
       return;
     }
-    // select 工具：命中测试
-    const w = this.board.screenToWorld(ev.clientX, ev.clientY);
-    const hit = this.scene.hitTest(w.x, w.y);
-    if (hit) {
-      this.scene.select(hit.id, ev.shiftKey);
-      this.scene.raise(hit.id);
+    // select 工具：用 ev.target 走 DOM —— 这样 viewport 的 pointer-events: none 自动让点穿透到图，
+    // 只有 .vp-edge 接到点击就选中 viewport；图直接选图。
+    let el = ev.target;
+    while (el && el !== this.boardEl && !(el.classList && el.classList.contains("obj"))) {
+      el = el.parentElement;
+    }
+    const hitObj = (el && el.classList && el.classList.contains("obj"))
+      ? this.scene.get(el.dataset.id)
+      : null;
+    if (hitObj) {
+      this.scene.select(hitObj.id, ev.shiftKey);
+      // 不自动 raise —— z-order 由用户手动控制
       this._dragState = {
-        id: hit.id,
+        id: hitObj.id,
         startX: ev.clientX,
         startY: ev.clientY,
-        ox: hit.x,
-        oy: hit.y,
+        ox: hitObj.x,
+        oy: hitObj.y,
       };
     } else {
       this.scene.clearSelection();
@@ -147,13 +153,15 @@ export class Input {
       const x = Math.min(x0, w.x), y = Math.min(y0, w.y);
       const wW = Math.abs(w.x - x0), hH = Math.abs(w.y - y0);
       if (this.onViewportFinish) {
-        // 太小当点击处理：给个默认尺寸放在那
         if (wW < 16 || hH < 16) {
-          this.onViewportFinish({ x: x + wW / 2, y: y + hH / 2, w: 512, h: 512, defaulted: true });
+          // 太小当点击处理 —— 给个默认尺寸放在那
+          this.onViewportFinish({ x: x + wW / 2, y: y + hH / 2, w: 512, h: 512 });
         } else {
-          this.onViewportFinish({ x: x + wW / 2, y: y + hH / 2, w: wW, h: hH, defaulted: false });
+          this.onViewportFinish({ x: x + wW / 2, y: y + hH / 2, w: wW, h: hH });
         }
       }
+      // 创建完一个就退回 select —— 不要让用户拖出连串 viewport
+      this.setTool("select");
       return;
     }
   };
@@ -176,14 +184,34 @@ export class Input {
       ev.preventDefault();
       return;
     }
-    if ((ev.key === "Delete" || ev.key === "Backspace")) {
+    if ((ev.key === "Delete" || ev.key === "Backspace" || ev.key === "x" || ev.key === "X")) {
+      // X 和 Delete 都删 —— Blender 习惯
       if (this.hooks.onDelete) this.hooks.onDelete();
       ev.preventDefault();
       return;
     }
-    if (ev.key === "v" || ev.key === "V") this.setTool("select");
-    else if (ev.key === "h" || ev.key === "H") this.setTool("hand");
+    if ((ev.ctrlKey || ev.metaKey) && (ev.key === "d" || ev.key === "D")) {
+      if (this.hooks.onDuplicate) this.hooks.onDuplicate();
+      ev.preventDefault();
+      return;
+    }
+    // z-order：Ctrl+] / Ctrl+[ 单步；加 Shift 顶 / 底
+    if ((ev.ctrlKey || ev.metaKey) && (ev.key === "]" || ev.key === "[")) {
+      const top = ev.key === "]";
+      for (const id of this.scene.selection) {
+        if (ev.shiftKey) {
+          if (top) this.scene.raiseToTop(id); else this.scene.lowerToBottom(id);
+        } else {
+          if (top) this.scene.raiseOne(id); else this.scene.lowerOne(id);
+        }
+      }
+      ev.preventDefault();
+      return;
+    }
+    // 单字符工具切换（V 已经被 Ctrl+V 占用 → 不再绑 V 作工具，select 是默认）
+    if (ev.key === "h" || ev.key === "H") this.setTool("hand");
     else if (ev.key === "r" || ev.key === "R") this.setTool("viewport");
+    else if (ev.key === "s" || ev.key === "S") this.setTool("select");
     else if (ev.key === "0") { if (this.hooks.onFit) this.hooks.onFit(); }
     else if (ev.key === "Escape") { this.scene.clearSelection(); if (this.hooks.onEscape) this.hooks.onEscape(); }
   };
@@ -212,23 +240,40 @@ export class Input {
   };
 
   async _ingestImageFile(file) {
-    const url = URL.createObjectURL(file);
+    // 测量阶段：临时 URL 拿 naturalW/H，测完立刻 revoke。真正给 obj 的是 Blob 自己。
+    const tmpUrl = URL.createObjectURL(file);
     const img = new Image();
-    await new Promise((res, rej) => {
-      img.onload = res;
-      img.onerror = () => rej(new Error("图片加载失败"));
-      img.src = url;
-    });
-    // 在屏幕中心落下（世界坐标）
+    let naturalW = 0, naturalH = 0;
+    try {
+      await new Promise((res, rej) => {
+        img.onload = res;
+        img.onerror = () => rej(new Error("图片加载失败"));
+        img.src = tmpUrl;
+      });
+      naturalW = img.naturalWidth;
+      naturalH = img.naturalHeight;
+    } finally {
+      try { URL.revokeObjectURL(tmpUrl); } catch (_) {}
+    }
+    if (!naturalW || !naturalH) return;
     const r = this.boardEl.getBoundingClientRect();
     const center = this.board.screenToWorld(r.left + r.width / 2, r.top + r.height / 2);
+    // DPI 校正：让 1 世界 px = 1 物理屏幕 px。
+    // Win+Shift+S 之类截屏是物理像素，在 1.5x 显示器上不校正会被放大成 1.5 倍 CSS px。
+    const dpr = window.devicePixelRatio || 1;
+    let targetLong = Math.max(naturalW, naturalH) / dpr;
+    // 安全帽：再大不超过当前视野短边的 90%（防止 4K 截屏一来塞满视野）
+    const scale = this.board.viewport.scale;
+    const maxLong = Math.min(r.width, r.height) / scale * 0.9;
+    if (targetLong > maxLong) targetLong = maxLong;
     if (this.onPaste) {
       this.onPaste({
-        src: url,
-        naturalW: img.naturalWidth,
-        naturalH: img.naturalHeight,
+        blob: file,
+        naturalW,
+        naturalH,
         x: center.x,
         y: center.y,
+        targetLongWorld: targetLong,
       });
     }
   }

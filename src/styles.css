@@ -92,13 +92,43 @@ body[data-tool="viewport"] .board { cursor: crosshair; }
   transform-origin: 0 0;
   will-change: transform;
 }
+.layer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+}
 
 .overlay {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  /* SVG 选框 / 把手等 */
+  /* 屏幕 px 的选框 / 把手；不随 #world 缩放 */
 }
+.overlay-rect {
+  position: absolute;
+  border: 3px solid var(--accent);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25), 0 0 16px var(--accent-soft);
+  pointer-events: none;
+  box-sizing: border-box;
+}
+.overlay-handle {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  margin-top: -6px;
+  background: var(--bg);
+  border: 2px solid var(--accent);
+  border-radius: 2px;
+  pointer-events: auto;
+  cursor: nwse-resize;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  touch-action: none;
+}
+.overlay-handle[data-anchor="ne"], .overlay-handle[data-anchor="sw"] { cursor: nesw-resize; }
+.overlay-handle[data-anchor="nw"], .overlay-handle[data-anchor="se"] { cursor: nwse-resize; }
 
 /* 对象 —— 都是绝对定位、世界坐标 px。
    transform 通过 left/top + width/height（world px）；缩放由父容器 scale 给。 */
@@ -107,7 +137,7 @@ body[data-tool="viewport"] .board { cursor: crosshair; }
   user-select: none;
   pointer-events: auto;
 }
-.obj.img > img {
+.obj.image > img {
   display: block;
   width: 100%;
   height: 100%;
@@ -115,10 +145,22 @@ body[data-tool="viewport"] .board { cursor: crosshair; }
   -webkit-user-drag: none;
 }
 .obj.viewport {
-  border: 2px dashed var(--accent);
   background: var(--accent-soft);
   box-sizing: border-box;
+  /* 边框选择：.obj 整体 pointer-events: none，让点击穿过到下面的图。
+     只有 .vp-edge 边带接 pointer。 */
+  pointer-events: none;
 }
+.obj.viewport .vp-edge {
+  position: absolute;
+  box-sizing: border-box;
+  pointer-events: auto;
+  /* 边带本身有 8 世界 px 宽的 hit 区，dashed border 描在外侧 */
+}
+.obj.viewport .vp-edge.top    { top: 0;    left: 0; right: 0;  height: 8px; border-top: 4px dashed var(--accent); }
+.obj.viewport .vp-edge.bottom { bottom: 0; left: 0; right: 0;  height: 8px; border-bottom: 4px dashed var(--accent); }
+.obj.viewport .vp-edge.left   { top: 0; bottom: 0; left: 0;   width: 8px;  border-left: 4px dashed var(--accent); }
+.obj.viewport .vp-edge.right  { top: 0; bottom: 0; right: 0;  width: 8px;  border-right: 4px dashed var(--accent); }
 .obj.viewport .vp-label {
   position: absolute;
   left: 4px;
@@ -131,10 +173,7 @@ body[data-tool="viewport"] .board { cursor: crosshair; }
   pointer-events: none;
   white-space: nowrap;
 }
-.obj.selected {
-  outline: 2px solid var(--accent);
-  outline-offset: 0;
-}
+/* 选中态本身不画；选框由 overlay 用屏幕 px 画 */
 
 /* 顶栏 */
 .top-bar {
@@ -203,6 +242,7 @@ body[data-tool="viewport"] .board { cursor: crosshair; }
   pointer-events: none;
 }
 .hud .sep { opacity: 0.4; }
+.hud .version { opacity: 0.6; font-variant-numeric: tabular-nums; }
 
 /* 浮窗（viewport 属性） */
 .float-panel {
@@ -275,6 +315,45 @@ body[data-tool="viewport"] .board { cursor: crosshair; }
   background: transparent;
   color: var(--ink);
   border-color: var(--line);
+}
+.lock-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+.lock-btn[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.row-value {
+  flex: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+}
+.z-row { gap: 4px; }
+.z-btn {
+  flex: 1;
+  padding: 4px 0;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  text-align: center;
+}
+.z-btn:hover { background: var(--bg-soft); }
+.z-btn:active { background: var(--accent-soft); }
+#actionToast {
+  bottom: 96px;
+  padding: 6px 12px;
 }
 
 /* toast */
