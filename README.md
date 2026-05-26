@@ -46,7 +46,11 @@ The viewport idea has plenty of room. On the roadmap:
 | Paste image | `Ctrl+V` |
 | Move object | Left-drag |
 | Resize | Drag any of 8 handles — corners keep aspect, edges stretch |
+| Rotate | Drag the round handle above the selection (hold `Shift` to snap 15°) |
+| Multi-select | Drag a marquee on empty board; `Shift+click` to toggle |
+| Undo / Redo | `Ctrl+Z` / `Ctrl+Shift+Z` (or `Ctrl+Y`) |
 | Duplicate | `Ctrl+D` |
+| Z-order | `Ctrl+]` / `Ctrl+[` step; add `Shift` for top / bottom |
 | Pan | Middle-drag, or hold `Space` and drag, or `H` then drag |
 | Zoom | Mouse wheel (cursor is the anchor; hold `Ctrl` for coarser) |
 | New viewport | `R` then drag a rectangle (or click for a default 512×512) |

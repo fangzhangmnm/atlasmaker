@@ -7,6 +7,9 @@ import {
   makeImageObject,
   makeViewportObject,
   resizeRect,
+  anchorWorldPos,
+  handleWorldPositions,
+  rotatedAABB,
   syncViewportResToRect,
   HANDLE_ANCHORS,
 } from "./objects.js";
@@ -73,6 +76,16 @@ for (const [name, btn] of Object.entries(toolButtons)) {
 document.getElementById("fitButton").addEventListener("click", () => doFit());
 function doFit() { board.fitTo(scene.bboxes()); }
 
+// ----- session 名（占位，纯前端，无持久化） -----
+const sessionInput = document.getElementById("sessionName");
+function applySessionTitle() {
+  const name = sessionInput.value.trim() || "未命名";
+  document.title = `${name} — AtlasMaker`;
+}
+sessionInput.addEventListener("input", applySessionTitle);
+sessionInput.addEventListener("change", applySessionTitle);
+applySessionTitle();
+
 // ----- 主题 -----
 const THEMES = ["auto", "day", "night"];
 document.getElementById("themeButton").addEventListener("click", () => {
@@ -109,6 +122,12 @@ document.getElementById("imagePanelClose").addEventListener("click", () => {
 });
 
 function refreshPanels() {
+  // 多选时两个浮窗都不显示（per-obj 属性不适合多选编辑）
+  if (scene.selection.size > 1) {
+    vpPanel.classList.add("hidden");
+    imgPanel.classList.add("hidden");
+    return;
+  }
   const sel = scene.firstSelected();
   if (sel && sel.type === "viewport") {
     vpPanel.classList.remove("hidden");
@@ -136,7 +155,7 @@ function refreshPanels() {
 function patchSelectedViewport(patch) {
   const sel = scene.firstSelected();
   if (!sel || sel.type !== "viewport") return;
-  scene.update(sel.id, patch);
+  scene.act(() => scene.update(sel.id, patch));
 }
 
 function onResChange(field) {
@@ -150,7 +169,7 @@ function onResChange(field) {
     if (field === "w") newResH = Math.max(1, Math.round(newResW / rectAspect));
     else newResW = Math.max(1, Math.round(newResH * rectAspect));
   }
-  scene.update(sel.id, { resW: newResW, resH: newResH });
+  scene.act(() => scene.update(sel.id, { resW: newResW, resH: newResH }));
 }
 vpResW.addEventListener("change", () => onResChange("w"));
 vpResH.addEventListener("change", () => onResChange("h"));
@@ -166,7 +185,7 @@ vpAspectLock.addEventListener("click", () => {
     const resPatch = syncViewportResToRect({ ...sel, aspectLocked: true });
     if (resPatch) Object.assign(patch, resPatch);
   }
-  scene.update(sel.id, patch);
+  scene.act(() => scene.update(sel.id, patch));
 });
 
 vpExportBtn.addEventListener("click", async () => {
@@ -193,23 +212,23 @@ vpCopyBtn.addEventListener("click", async () => {
 
 vpDeleteBtn.addEventListener("click", () => {
   const sel = scene.firstSelected();
-  if (sel) scene.remove(sel.id);
+  if (sel) scene.act(() => scene.remove(sel.id));
 });
 
 // ----- 图片浮窗 wiring -----
 imgAspectLock.addEventListener("click", () => {
   const sel = scene.firstSelected();
   if (!sel || sel.type !== "image") return;
-  scene.update(sel.id, { aspectLocked: !sel.aspectLocked });
+  scene.act(() => scene.update(sel.id, { aspectLocked: !sel.aspectLocked }));
 });
 imgInterp.addEventListener("change", () => {
   const sel = scene.firstSelected();
   if (!sel || sel.type !== "image") return;
-  scene.update(sel.id, { interp: imgInterp.value });
+  scene.act(() => scene.update(sel.id, { interp: imgInterp.value }));
 });
 imgDeleteBtn.addEventListener("click", () => {
   const sel = scene.firstSelected();
-  if (sel) scene.remove(sel.id);
+  if (sel) scene.act(() => scene.remove(sel.id));
 });
 
 // ----- z-order 按钮（两个 panel 共用一套 handler） -----
@@ -217,10 +236,13 @@ function wireZBtn(btnId, fn) {
   const btn = document.getElementById(btnId);
   if (!btn) return;
   btn.addEventListener("click", () => {
-    const sel = scene.firstSelected();
-    if (sel) fn(sel.id);
+    if (!scene.selection.size) return;
+    scene.act(() => {
+      for (const id of scene.selection) fn(id);
+    });
   });
 }
+// 注：旧 wireZBtn 的 fn 直接对 id 操作；包裹 act 之后只跑一次，下面这些就是单步动作
 wireZBtn("vpZTop",    (id) => scene.raiseToTop(id));
 wireZBtn("vpZUp",     (id) => scene.raiseOne(id));
 wireZBtn("vpZDown",   (id) => scene.lowerOne(id));
@@ -253,39 +275,49 @@ const input = new Input({
   scene,
   onTool: setActiveTool,
   onPaste: ({ blob, naturalW, naturalH, x, y, targetLongWorld }) => {
-    const obj = makeImageObject({ blob, naturalW, naturalH, x, y, targetLongWorld });
-    scene.add(obj);
-    scene.select(obj.id, false);
+    scene.act(() => {
+      const obj = makeImageObject({ blob, naturalW, naturalH, x, y, targetLongWorld });
+      scene.add(obj);
+      scene.select(obj.id, false);
+    });
   },
   onViewportFinish: ({ x, y, w, h }) => {
-    const obj = makeViewportObject({ x, y, w, h });
-    scene.add(obj);
-    scene.select(obj.id, false);
+    scene.act(() => {
+      const obj = makeViewportObject({ x, y, w, h });
+      scene.add(obj);
+      scene.select(obj.id, false);
+    });
   },
   hooks: {
     onFit: doFit,
     onDelete: () => {
-      for (const id of Array.from(scene.selection)) scene.remove(id);
+      if (!scene.selection.size) return;
+      scene.act(() => {
+        for (const id of Array.from(scene.selection)) scene.remove(id);
+      });
     },
     onDuplicate: () => {
-      const ids = Array.from(scene.selection);
-      const newIds = [];
-      for (const id of ids) {
-        const src = scene.get(id);
-        if (!src) continue;
-        // 浅拷贝就行：Blob 不可变可共享，URL 让 _renderNode 重新生成
-        const copy = { ...src };
-        delete copy.id;
-        copy._displayUrl = null;
-        copy.x += 20;
-        copy.y += 20;
-        scene.add(copy);
-        newIds.push(copy.id);
-      }
-      if (newIds.length) {
-        scene.clearSelection();
-        for (const nid of newIds) scene.select(nid, true);
-      }
+      if (!scene.selection.size) return;
+      scene.act(() => {
+        const ids = Array.from(scene.selection);
+        const newIds = [];
+        for (const id of ids) {
+          const src = scene.get(id);
+          if (!src) continue;
+          // 浅拷贝就行：Blob 不可变可共享，URL 让 _renderNode 重新生成
+          const copy = { ...src };
+          delete copy.id;
+          copy._displayUrl = null;
+          copy.x += 20;
+          copy.y += 20;
+          scene.add(copy);
+          newIds.push(copy.id);
+        }
+        if (newIds.length) {
+          scene.clearSelection();
+          for (const nid of newIds) scene.select(nid, true);
+        }
+      });
     },
   },
 });
@@ -296,17 +328,49 @@ input.setTool("select");
 // 所以：选区集没变 → 只更新位置；变了 → 重建。
 let _renderedSelSig = "";
 function renderOverlay() {
-  const sig = Array.from(scene.selection).join(",");
+  const multi = scene.selection.size > 1;
+  // 多选时签名 = "multi:<ids>"，单选 = id。变了就重建（多选没有 handle）。
+  const sig = (multi ? "multi:" : "") + Array.from(scene.selection).join(",");
   const rebuild = sig !== _renderedSelSig;
   if (rebuild) {
     overlayEl.innerHTML = "";
     _renderedSelSig = sig;
   }
   const br = boardEl.getBoundingClientRect();
+  if (multi) {
+    // 多选：每个 obj 旋转后的 AABB 取并集，画 union rect。不放 handle（一期不支持群组 resize）。
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const id of scene.selection) {
+      const o = scene.get(id);
+      if (!o) continue;
+      const a = rotatedAABB(o);
+      if (a.x0 < x0) x0 = a.x0;
+      if (a.y0 < y0) y0 = a.y0;
+      if (a.x1 > x1) x1 = a.x1;
+      if (a.y1 > y1) y1 = a.y1;
+    }
+    if (x0 === Infinity) return;
+    let rectEl = overlayEl.querySelector(".overlay-rect[data-id=__multi__]");
+    if (rebuild || !rectEl) {
+      rectEl = document.createElement("div");
+      rectEl.className = "overlay-rect";
+      rectEl.dataset.id = "__multi__";
+      overlayEl.appendChild(rectEl);
+    }
+    const aPt = board.worldToScreen(x0, y0);
+    const bPt = board.worldToScreen(x1, y1);
+    rectEl.style.left = `${aPt.x - br.left}px`;
+    rectEl.style.top = `${aPt.y - br.top}px`;
+    rectEl.style.width = `${bPt.x - aPt.x}px`;
+    rectEl.style.height = `${bPt.y - aPt.y}px`;
+    rectEl.style.transform = "";
+    return;
+  }
+  // 单选：rect（CSS rotate）+ 8 resize handle（屏幕 px 位置，每个 handle 已被旋转）+ 1 rotation handle
   for (const id of scene.selection) {
     const obj = scene.get(id);
     if (!obj) continue;
-    let rectEl;
+    let rectEl, rotEl;
     const handles = {};
     if (rebuild) {
       rectEl = document.createElement("div");
@@ -324,33 +388,46 @@ function renderOverlay() {
         overlayEl.appendChild(h);
         handles[a] = h;
       }
+      rotEl = document.createElement("div");
+      rotEl.className = "overlay-rot";
+      rotEl.dataset.id = id;
+      rotEl.addEventListener("pointerdown", onRotateHandlePointerDown);
+      overlayEl.appendChild(rotEl);
     } else {
       rectEl = overlayEl.querySelector(`.overlay-rect[data-id="${id}"]`);
       for (const a of HANDLE_ANCHORS) {
         handles[a] = overlayEl.querySelector(`.overlay-handle[data-id="${id}"][data-anchor="${a}"]`);
       }
+      rotEl = overlayEl.querySelector(`.overlay-rot[data-id="${id}"]`);
     }
-    const aPt = board.worldToScreen(obj.x, obj.y);
-    const bPt = board.worldToScreen(obj.x + obj.w, obj.y + obj.h);
-    const L = aPt.x - br.left, T = aPt.y - br.top;
-    const R = bPt.x - br.left, B = bPt.y - br.top;
+    // rect：用 CSS rotate 表示旋转，宽高 = 世界 × scale
+    const scale = board.viewport.scale;
+    const cWorldX = obj.x + obj.w / 2, cWorldY = obj.y + obj.h / 2;
+    const cScreen = board.worldToScreen(cWorldX, cWorldY);
+    const cL = cScreen.x - br.left, cT = cScreen.y - br.top;
+    const wScreen = obj.w * scale, hScreen = obj.h * scale;
     if (rectEl) {
-      rectEl.style.left = `${L}px`;
-      rectEl.style.top = `${T}px`;
-      rectEl.style.width = `${R - L}px`;
-      rectEl.style.height = `${B - T}px`;
+      rectEl.style.left = `${cL - wScreen / 2}px`;
+      rectEl.style.top = `${cT - hScreen / 2}px`;
+      rectEl.style.width = `${wScreen}px`;
+      rectEl.style.height = `${hScreen}px`;
+      rectEl.style.transform = obj.rotation ? `rotate(${obj.rotation}deg)` : "";
+      rectEl.style.transformOrigin = "50% 50%";
     }
-    const mx = (L + R) / 2, my = (T + B) / 2;
-    const pos = {
-      nw: [L, T], n: [mx, T], ne: [R, T],
-      w:  [L, my],            e:  [R, my],
-      sw: [L, B], s: [mx, B], se: [R, B],
-    };
+    // handle 位置：用 handleWorldPositions 拿到旋转后的 world 坐标，再转屏幕
+    const rotationOffsetWorld = 24 / scale; // 旋转把手离 top-center 24 屏幕 px
+    const hwp = handleWorldPositions(obj, rotationOffsetWorld);
     for (const a of HANDLE_ANCHORS) {
       const h = handles[a];
       if (!h) continue;
-      h.style.left = `${pos[a][0]}px`;
-      h.style.top = `${pos[a][1]}px`;
+      const sp = board.worldToScreen(hwp[a].x, hwp[a].y);
+      h.style.left = `${sp.x - br.left}px`;
+      h.style.top = `${sp.y - br.top}px`;
+    }
+    if (rotEl) {
+      const sp = board.worldToScreen(hwp.rot.x, hwp.rot.y);
+      rotEl.style.left = `${sp.x - br.left}px`;
+      rotEl.style.top = `${sp.y - br.top}px`;
     }
   }
 }
@@ -364,7 +441,16 @@ function onHandlePointerDown(ev) {
   const obj = scene.get(id);
   if (!obj) return;
   ev.currentTarget.setPointerCapture(ev.pointerId);
-  _resizeState = { id, anchor, pointerId: ev.pointerId, handleEl: ev.currentTarget };
+  scene.beginAct();
+  // 把 anchor 的 world 坐标算好（drag 中保持，对支持旋转的 resize 数学是必需）
+  const aw = anchorWorldPos(obj, anchor);
+  _resizeState = {
+    id, anchor,
+    anchorStartWX: aw.x,
+    anchorStartWY: aw.y,
+    pointerId: ev.pointerId,
+    handleEl: ev.currentTarget,
+  };
   ev.currentTarget.addEventListener("pointermove", onHandlePointerMove);
   ev.currentTarget.addEventListener("pointerup", onHandlePointerUp);
   ev.currentTarget.addEventListener("pointercancel", onHandlePointerUp);
@@ -374,7 +460,11 @@ function onHandlePointerMove(ev) {
   const obj = scene.get(_resizeState.id);
   if (!obj) return;
   const w = board.screenToWorld(ev.clientX, ev.clientY);
-  const next = resizeRect(obj, _resizeState.anchor, w.x, w.y);
+  const next = resizeRect(
+    obj, _resizeState.anchor,
+    w.x, w.y,
+    _resizeState.anchorStartWX, _resizeState.anchorStartWY,
+  );
   const patch = next;
   // viewport aspectLocked + 边把手改了比例 → res 跟上
   if (obj.type === "viewport" && obj.aspectLocked) {
@@ -392,6 +482,48 @@ function onHandlePointerUp(ev) {
   h.removeEventListener("pointerup", onHandlePointerUp);
   h.removeEventListener("pointercancel", onHandlePointerUp);
   _resizeState = null;
+  scene.endAct();
+}
+
+// ----- 旋转把手 -----
+let _rotateState = null;
+function onRotateHandlePointerDown(ev) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  const id = ev.currentTarget.dataset.id;
+  const obj = scene.get(id);
+  if (!obj) return;
+  ev.currentTarget.setPointerCapture(ev.pointerId);
+  scene.beginAct();
+  _rotateState = { id, pointerId: ev.pointerId, handleEl: ev.currentTarget };
+  ev.currentTarget.addEventListener("pointermove", onRotateHandlePointerMove);
+  ev.currentTarget.addEventListener("pointerup", onRotateHandlePointerUp);
+  ev.currentTarget.addEventListener("pointercancel", onRotateHandlePointerUp);
+}
+function onRotateHandlePointerMove(ev) {
+  if (!_rotateState || ev.pointerId !== _rotateState.pointerId) return;
+  const obj = scene.get(_rotateState.id);
+  if (!obj) return;
+  const w = board.screenToWorld(ev.clientX, ev.clientY);
+  const cx = obj.x + obj.w / 2;
+  const cy = obj.y + obj.h / 2;
+  // local (0, -1) → world (sin r, -cos r)；反推 r = atan2(dx, -dy)
+  let rDeg = Math.atan2(w.x - cx, -(w.y - cy)) * 180 / Math.PI;
+  if (ev.shiftKey) rDeg = Math.round(rDeg / 15) * 15; // shift 吸附 15°
+  // 归一化到 (-180, 180]
+  while (rDeg > 180) rDeg -= 360;
+  while (rDeg <= -180) rDeg += 360;
+  scene.update(_rotateState.id, { rotation: rDeg });
+}
+function onRotateHandlePointerUp(ev) {
+  if (!_rotateState) return;
+  const h = _rotateState.handleEl;
+  try { h.releasePointerCapture(ev.pointerId); } catch (_) {}
+  h.removeEventListener("pointermove", onRotateHandlePointerMove);
+  h.removeEventListener("pointerup", onRotateHandlePointerUp);
+  h.removeEventListener("pointercancel", onRotateHandlePointerUp);
+  _rotateState = null;
+  scene.endAct();
 }
 
 window.addEventListener("resize", () => renderOverlay());
@@ -410,21 +542,41 @@ async function rasterizeViewport(vp) {
   const sx = vp.resW / vp.w;
   const sy = vp.resH / vp.h;
   const vpNearest = vp.interp === "nearest";
+  // viewport 自身的旋转：每张图先反旋转回 viewport 自身坐标系，再画到输出 canvas
+  const vpRotRad = (vp.rotation || 0) * Math.PI / 180;
+  const vpCx = vp.x + vp.w / 2;
+  const vpCy = vp.y + vp.h / 2;
+  const cos = Math.cos(-vpRotRad), sin = Math.sin(-vpRotRad);
+  // 用旋转 AABB 做相交粗过滤
+  const vpAABB = rotatedAABB(vp);
   // 按 DOM 顺序（z-order 由低到高），底图先画
   for (const obj of scene.listImages()) {
-    if (obj.x + obj.w < vp.x || obj.x > vp.x + vp.w ||
-        obj.y + obj.h < vp.y || obj.y > vp.y + vp.h) continue;
+    const aabb = rotatedAABB(obj);
+    if (aabb.x1 < vpAABB.x0 || aabb.x0 > vpAABB.x1 ||
+        aabb.y1 < vpAABB.y0 || aabb.y0 > vpAABB.y1) continue;
     if (!obj.blob) continue;
     let bitmap = null;
     try { bitmap = await createImageBitmap(obj.blob); }
     catch (e) { console.warn("decode failed", e); continue; }
-    // viewport 或 image 任一标 nearest → 这次 draw 关 smoothing
     ctx.imageSmoothingEnabled = !(vpNearest || obj.interp === "nearest");
-    const dx = (obj.x - vp.x) * sx;
-    const dy = (obj.y - vp.y) * sy;
+    // 图的中心相对 viewport 中心的 world 偏移
+    const wdx = (obj.x + obj.w / 2) - vpCx;
+    const wdy = (obj.y + obj.h / 2) - vpCy;
+    // 反旋转到 viewport-local 帧（vp 没旋时 cos=1 sin=0 即 identity）
+    const lx = wdx * cos - wdy * sin;
+    const ly = wdx * sin + wdy * cos;
+    // 输出像素中心位置 = 输出 canvas 中心 + lx/ly 缩到输出尺度
+    const dxCenter = vp.resW / 2 + lx * sx;
+    const dyCenter = vp.resH / 2 + ly * sy;
+    // 图相对 viewport 的旋转
+    const relRotRad = ((obj.rotation || 0) - (vp.rotation || 0)) * Math.PI / 180;
     const dw = obj.w * sx;
     const dh = obj.h * sy;
-    try { ctx.drawImage(bitmap, dx, dy, dw, dh); } catch (_) {}
+    ctx.save();
+    ctx.translate(dxCenter, dyCenter);
+    if (relRotRad) ctx.rotate(relRotRad);
+    try { ctx.drawImage(bitmap, -dw / 2, -dh / 2, dw, dh); } catch (_) {}
+    ctx.restore();
     bitmap.close();
   }
   return await new Promise((res) => canvas.toBlob(res, "image/png"));

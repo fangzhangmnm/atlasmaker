@@ -129,6 +129,29 @@ body[data-tool="viewport"] .board { cursor: crosshair; }
 }
 .overlay-handle[data-anchor="ne"], .overlay-handle[data-anchor="sw"] { cursor: nesw-resize; }
 .overlay-handle[data-anchor="nw"], .overlay-handle[data-anchor="se"] { cursor: nwse-resize; }
+.overlay-rot {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  margin-left: -8px;
+  margin-top: -8px;
+  background: var(--bg);
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  pointer-events: auto;
+  cursor: grab;
+  touch-action: none;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+.overlay-rot:active { cursor: grabbing; }
+
+.marquee-select {
+  position: absolute;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  pointer-events: none;
+  z-index: 5;
+}
 
 /* 对象 —— 都是绝对定位、世界坐标 px。
    transform 通过 left/top + width/height（world px）；缩放由父容器 scale 给。 */
@@ -197,6 +220,20 @@ body[data-tool="viewport"] .board { cursor: crosshair; }
 }
 
 .tool-group { display: flex; gap: 2px; }
+
+.session-name {
+  min-width: 96px;
+  max-width: 220px;
+  padding: 4px 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  border-radius: 999px;
+  outline: none;
+}
+.session-name:hover { background: var(--bg-soft); }
+.session-name:focus { background: var(--bg); border-color: var(--line); }
 
 .tool {
   width: 36px;

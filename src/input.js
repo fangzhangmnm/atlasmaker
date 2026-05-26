@@ -2,6 +2,8 @@
 // 工具：select（默认）、hand、viewport（拖框生成）。
 // 通用：中键 / 空格临时变 hand；滚轮 zoom（光标为锚点，holding Ctrl 更快）。
 
+import { rotatedAABB } from "./objects.js";
+
 const MIDDLE_BTN = 1;     // ev.button: 0=左, 1=中, 2=右
 const MIDDLE_MASK = 4;    // ev.buttons: 1=左 2=右 4=中
 const HAND_KEY = " ";
@@ -69,7 +71,7 @@ export class Input {
       this._marqueeState = { x0: w.x, y0: w.y, node: null };
       return;
     }
-    // select 工具：用 ev.target 走 DOM —— 这样 viewport 的 pointer-events: none 自动让点穿透到图，
+    // select 工具：用 ev.target 走 DOM —— viewport 的 pointer-events: none 自动让点穿透到图，
     // 只有 .vp-edge 接到点击就选中 viewport；图直接选图。
     let el = ev.target;
     while (el && el !== this.boardEl && !(el.classList && el.classList.contains("obj"))) {
@@ -79,17 +81,36 @@ export class Input {
       ? this.scene.get(el.dataset.id)
       : null;
     if (hitObj) {
-      this.scene.select(hitObj.id, ev.shiftKey);
-      // 不自动 raise —— z-order 由用户手动控制
+      if (ev.shiftKey) {
+        // shift-click：toggle 选择，不开始拖拽
+        if (this.scene.selection.has(hitObj.id)) this.scene.deselect(hitObj.id);
+        else this.scene.select(hitObj.id, true);
+        return;
+      }
+      // 普通点：如果不在选区内，替换为只选这个；在选区内则保持多选
+      if (!this.scene.selection.has(hitObj.id)) this.scene.select(hitObj.id, false);
+      // 开始拖拽（可能拖一个，也可能拖多选）
+      this.scene.beginAct();
+      const items = [];
+      for (const id of this.scene.selection) {
+        const o = this.scene.get(id);
+        if (o) items.push({ id, ox: o.x, oy: o.y });
+      }
       this._dragState = {
-        id: hitObj.id,
+        items,
         startX: ev.clientX,
         startY: ev.clientY,
-        ox: hitObj.x,
-        oy: hitObj.y,
+        moved: false,
       };
     } else {
-      this.scene.clearSelection();
+      // 空白处按下：marquee 框选
+      this._marqueeSelState = {
+        startX: ev.clientX,
+        startY: ev.clientY,
+        additive: !!ev.shiftKey,
+        el: null,
+      };
+      if (!ev.shiftKey) this.scene.clearSelection();
     }
   };
 
@@ -107,10 +128,35 @@ export class Input {
     if (this._dragState) {
       const dx = (ev.clientX - this._dragState.startX) / this.board.viewport.scale;
       const dy = (ev.clientY - this._dragState.startY) / this.board.viewport.scale;
-      this.scene.update(this._dragState.id, {
-        x: Math.round(this._dragState.ox + dx),
-        y: Math.round(this._dragState.oy + dy),
-      });
+      // 多选时一起挪
+      for (const item of this._dragState.items) {
+        this.scene.update(item.id, {
+          x: Math.round(item.ox + dx),
+          y: Math.round(item.oy + dy),
+        });
+      }
+      this._dragState.moved = true;
+      return;
+    }
+    if (this._marqueeSelState) {
+      const r = this.boardEl.getBoundingClientRect();
+      const x0 = this._marqueeSelState.startX;
+      const y0 = this._marqueeSelState.startY;
+      const L = Math.min(x0, ev.clientX) - r.left;
+      const T = Math.min(y0, ev.clientY) - r.top;
+      const W = Math.abs(ev.clientX - x0);
+      const H = Math.abs(ev.clientY - y0);
+      if (!this._marqueeSelState.el) {
+        const n = document.createElement("div");
+        n.className = "marquee-select";
+        this.boardEl.appendChild(n);
+        this._marqueeSelState.el = n;
+      }
+      const n = this._marqueeSelState.el;
+      n.style.left = `${L}px`;
+      n.style.top = `${T}px`;
+      n.style.width = `${W}px`;
+      n.style.height = `${H}px`;
       return;
     }
     if (this._marqueeState) {
@@ -143,6 +189,28 @@ export class Input {
     }
     if (this._dragState) {
       this._dragState = null;
+      this.scene.endAct(); // 内部会判断是否真改了 (_actDirty)；没动就不入栈
+      return;
+    }
+    if (this._marqueeSelState) {
+      const { startX, startY, additive, el } = this._marqueeSelState;
+      this._marqueeSelState = null;
+      if (el) el.remove();
+      const w0 = this.board.screenToWorld(startX, startY);
+      const w1 = this.board.screenToWorld(ev.clientX, ev.clientY);
+      const x0 = Math.min(w0.x, w1.x), y0 = Math.min(w0.y, w1.y);
+      const x1 = Math.max(w0.x, w1.x), y1 = Math.max(w0.y, w1.y);
+      // 太小当点击空白处（已 clearSelection）
+      if (x1 - x0 < 4 && y1 - y0 < 4) return;
+      const hits = [];
+      for (const obj of this.scene.objects.values()) {
+        // 旋转后的 AABB 才是 obj 的视觉包围盒
+        const a = rotatedAABB(obj);
+        if (a.x1 >= x0 && a.x0 <= x1 && a.y1 >= y0 && a.y0 <= y1) {
+          hits.push(obj.id);
+        }
+      }
+      this.scene.selectMany(hits, additive);
       return;
     }
     if (this._marqueeState) {
@@ -198,13 +266,26 @@ export class Input {
     // z-order：Ctrl+] / Ctrl+[ 单步；加 Shift 顶 / 底
     if ((ev.ctrlKey || ev.metaKey) && (ev.key === "]" || ev.key === "[")) {
       const top = ev.key === "]";
-      for (const id of this.scene.selection) {
-        if (ev.shiftKey) {
-          if (top) this.scene.raiseToTop(id); else this.scene.lowerToBottom(id);
-        } else {
-          if (top) this.scene.raiseOne(id); else this.scene.lowerOne(id);
+      this.scene.act(() => {
+        for (const id of this.scene.selection) {
+          if (ev.shiftKey) {
+            if (top) this.scene.raiseToTop(id); else this.scene.lowerToBottom(id);
+          } else {
+            if (top) this.scene.raiseOne(id); else this.scene.lowerOne(id);
+          }
         }
-      }
+      });
+      ev.preventDefault();
+      return;
+    }
+    // undo / redo
+    if ((ev.ctrlKey || ev.metaKey) && (ev.key === "z" || ev.key === "Z")) {
+      if (ev.shiftKey) this.scene.redo(); else this.scene.undo();
+      ev.preventDefault();
+      return;
+    }
+    if ((ev.ctrlKey || ev.metaKey) && (ev.key === "y" || ev.key === "Y")) {
+      this.scene.redo();
       ev.preventDefault();
       return;
     }
