@@ -101,7 +101,7 @@ const vpResW = document.getElementById("vpResW");
 const vpResH = document.getElementById("vpResH");
 const vpInterp = document.getElementById("vpInterp");
 const vpBinding = document.getElementById("vpBinding");
-const vpAspectLock = document.getElementById("vpAspectLock");
+const vpLock = document.getElementById("vpLock");
 const vpExportBtn = document.getElementById("vpExport");
 const vpCopyBtn = document.getElementById("vpCopy");
 const vpDeleteBtn = document.getElementById("vpDelete");
@@ -110,7 +110,7 @@ const vpDeleteBtn = document.getElementById("vpDelete");
 const imgPanel = document.getElementById("imagePanel");
 const imgNaturalLabel = document.getElementById("imgNaturalLabel");
 const imgRectLabel = document.getElementById("imgRectLabel");
-const imgAspectLock = document.getElementById("imgAspectLock");
+const imgLock = document.getElementById("imgLock");
 const imgInterp = document.getElementById("imgInterp");
 const imgDeleteBtn = document.getElementById("imgDelete");
 
@@ -136,15 +136,15 @@ function refreshPanels() {
     vpResH.value = sel.resH;
     vpInterp.value = sel.interp || "linear";
     vpBinding.value = sel.binding || "";
-    vpAspectLock.setAttribute("aria-pressed", sel.aspectLocked ? "true" : "false");
-    vpAspectLock.textContent = sel.aspectLocked ? "🔒" : "🔓";
+    vpLock.setAttribute("aria-pressed", sel.locked ? "true" : "false");
+    vpLock.textContent = sel.locked ? "🔒" : "🔓";
   } else if (sel && sel.type === "image") {
     imgPanel.classList.remove("hidden");
     vpPanel.classList.add("hidden");
     imgNaturalLabel.textContent = `${sel.naturalW}×${sel.naturalH}`;
     imgRectLabel.textContent = `${sel.w}×${sel.h}`;
-    imgAspectLock.setAttribute("aria-pressed", sel.aspectLocked ? "true" : "false");
-    imgAspectLock.textContent = sel.aspectLocked ? "🔒" : "🔓";
+    imgLock.setAttribute("aria-pressed", sel.locked ? "true" : "false");
+    imgLock.textContent = sel.locked ? "🔒" : "🔓";
     imgInterp.value = sel.interp || "linear";
   } else {
     vpPanel.classList.add("hidden");
@@ -163,8 +163,8 @@ function onResChange(field) {
   if (!sel || sel.type !== "viewport") return;
   let newResW = field === "w" ? clampInt(vpResW.value, 1, 8192) : sel.resW;
   let newResH = field === "h" ? clampInt(vpResH.value, 1, 8192) : sel.resH;
-  if (sel.aspectLocked && sel.w > 0 && sel.h > 0) {
-    // 锁定：res 比例 = rect 比例。改谁，另一个 res 跟（不动 rect）。
+  // viewport rect/res 永远同比 —— 改谁，另一个 res 跟（不动 rect）
+  if (sel.w > 0 && sel.h > 0) {
     const rectAspect = sel.w / sel.h;
     if (field === "w") newResH = Math.max(1, Math.round(newResW / rectAspect));
     else newResW = Math.max(1, Math.round(newResH * rectAspect));
@@ -175,17 +175,10 @@ vpResW.addEventListener("change", () => onResChange("w"));
 vpResH.addEventListener("change", () => onResChange("h"));
 vpInterp.addEventListener("change", () => patchSelectedViewport({ interp: vpInterp.value }));
 
-vpAspectLock.addEventListener("click", () => {
+vpLock.addEventListener("click", () => {
   const sel = scene.firstSelected();
   if (!sel || sel.type !== "viewport") return;
-  const next = !sel.aspectLocked;
-  const patch = { aspectLocked: next };
-  if (next) {
-    // 刚锁上 —— 把 res 拉到 rect 比例（rect 是用户手感的主导）
-    const resPatch = syncViewportResToRect({ ...sel, aspectLocked: true });
-    if (resPatch) Object.assign(patch, resPatch);
-  }
-  scene.act(() => scene.update(sel.id, patch));
+  scene.act(() => scene.update(sel.id, { locked: !sel.locked }));
 });
 
 vpExportBtn.addEventListener("click", async () => {
@@ -216,10 +209,10 @@ vpDeleteBtn.addEventListener("click", () => {
 });
 
 // ----- 图片浮窗 wiring -----
-imgAspectLock.addEventListener("click", () => {
+imgLock.addEventListener("click", () => {
   const sel = scene.firstSelected();
   if (!sel || sel.type !== "image") return;
-  scene.act(() => scene.update(sel.id, { aspectLocked: !sel.aspectLocked }));
+  scene.act(() => scene.update(sel.id, { locked: !sel.locked }));
 });
 imgInterp.addEventListener("change", () => {
   const sel = scene.firstSelected();
@@ -367,9 +360,11 @@ function renderOverlay() {
     return;
   }
   // 单选：rect（CSS rotate）+ 8 resize handle（屏幕 px 位置，每个 handle 已被旋转）+ 1 rotation handle
+  // obj 锁住时不画 handle/rotation handle，rect 加 .locked class 视觉提示
   for (const id of scene.selection) {
     const obj = scene.get(id);
     if (!obj) continue;
+    const showHandles = !obj.locked;
     let rectEl, rotEl;
     const handles = {};
     if (rebuild) {
@@ -377,28 +372,32 @@ function renderOverlay() {
       rectEl.className = "overlay-rect";
       rectEl.dataset.id = id;
       overlayEl.appendChild(rectEl);
-      for (const a of HANDLE_ANCHORS) {
-        const h = document.createElement("div");
-        h.className = "overlay-handle";
-        h.dataset.anchor = a;
-        h.dataset.id = id;
-        if (a === "n" || a === "s") h.style.cursor = "ns-resize";
-        else if (a === "e" || a === "w") h.style.cursor = "ew-resize";
-        h.addEventListener("pointerdown", onHandlePointerDown);
-        overlayEl.appendChild(h);
-        handles[a] = h;
+      if (showHandles) {
+        for (const a of HANDLE_ANCHORS) {
+          const h = document.createElement("div");
+          h.className = "overlay-handle";
+          h.dataset.anchor = a;
+          h.dataset.id = id;
+          if (a === "n" || a === "s") h.style.cursor = "ns-resize";
+          else if (a === "e" || a === "w") h.style.cursor = "ew-resize";
+          h.addEventListener("pointerdown", onHandlePointerDown);
+          overlayEl.appendChild(h);
+          handles[a] = h;
+        }
+        rotEl = document.createElement("div");
+        rotEl.className = "overlay-rot";
+        rotEl.dataset.id = id;
+        rotEl.addEventListener("pointerdown", onRotateHandlePointerDown);
+        overlayEl.appendChild(rotEl);
       }
-      rotEl = document.createElement("div");
-      rotEl.className = "overlay-rot";
-      rotEl.dataset.id = id;
-      rotEl.addEventListener("pointerdown", onRotateHandlePointerDown);
-      overlayEl.appendChild(rotEl);
     } else {
       rectEl = overlayEl.querySelector(`.overlay-rect[data-id="${id}"]`);
-      for (const a of HANDLE_ANCHORS) {
-        handles[a] = overlayEl.querySelector(`.overlay-handle[data-id="${id}"][data-anchor="${a}"]`);
+      if (showHandles) {
+        for (const a of HANDLE_ANCHORS) {
+          handles[a] = overlayEl.querySelector(`.overlay-handle[data-id="${id}"][data-anchor="${a}"]`);
+        }
+        rotEl = overlayEl.querySelector(`.overlay-rot[data-id="${id}"]`);
       }
-      rotEl = overlayEl.querySelector(`.overlay-rot[data-id="${id}"]`);
     }
     // rect：用 CSS rotate 表示旋转，宽高 = 世界 × scale
     const scale = board.viewport.scale;
@@ -413,7 +412,9 @@ function renderOverlay() {
       rectEl.style.height = `${hScreen}px`;
       rectEl.style.transform = obj.rotation ? `rotate(${obj.rotation}deg)` : "";
       rectEl.style.transformOrigin = "50% 50%";
+      rectEl.classList.toggle("locked", !!obj.locked);
     }
+    if (!showHandles) continue;
     // handle 位置：用 handleWorldPositions 拿到旋转后的 world 坐标，再转屏幕
     const rotationOffsetWorld = 24 / scale; // 旋转把手离 top-center 24 屏幕 px
     const hwp = handleWorldPositions(obj, rotationOffsetWorld);
@@ -466,8 +467,8 @@ function onHandlePointerMove(ev) {
     _resizeState.anchorStartWX, _resizeState.anchorStartWY,
   );
   const patch = next;
-  // viewport aspectLocked + 边把手改了比例 → res 跟上
-  if (obj.type === "viewport" && obj.aspectLocked) {
+  // viewport 边把手改了比例 → res 永远跟上
+  if (obj.type === "viewport") {
     const tmp = { ...obj, ...next };
     const resPatch = syncViewportResToRect(tmp);
     if (resPatch) Object.assign(patch, resPatch);

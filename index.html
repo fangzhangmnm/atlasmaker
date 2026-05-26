@@ -124,7 +124,7 @@
           <input id="vpResW" type="number" min="1" max="8192" step="1" value="1024" />
           <span class="row-sep">×</span>
           <input id="vpResH" type="number" min="1" max="8192" step="1" value="1024" />
-          <button id="vpAspectLock" class="lock-btn" type="button" aria-pressed="true" title="锁定 rect 与分辨率同纵横比">🔒</button>
+          <button id="vpLock" class="lock-btn" type="button" aria-pressed="false" title="锁定 viewport：禁止拖 / 转 / 缩">🔓</button>
         </label>
         <label class="row"><span class="row-label">插值</span>
           <select id="vpInterp">
@@ -163,7 +163,7 @@
         </div>
         <div class="row"><span class="row-label">显示</span>
           <span id="imgRectLabel" class="row-value">—</span>
-          <button id="imgAspectLock" class="lock-btn" type="button" aria-pressed="true" title="锁定纵横比（拖角时保持）">🔒</button>
+          <button id="imgLock" class="lock-btn" type="button" aria-pressed="false" title="锁定图片：禁止拖 / 转 / 缩">🔓</button>
         </div>
         <label class="row"><span class="row-label">插值</span>
           <select id="imgInterp">

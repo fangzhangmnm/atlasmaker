@@ -89,13 +89,14 @@ export class Input {
       }
       // 普通点：如果不在选区内，替换为只选这个；在选区内则保持多选
       if (!this.scene.selection.has(hitObj.id)) this.scene.select(hitObj.id, false);
-      // 开始拖拽（可能拖一个，也可能拖多选）
-      this.scene.beginAct();
+      // 锁住的 obj 选中但不开始拖拽。多选时也只挪没锁的。
       const items = [];
       for (const id of this.scene.selection) {
         const o = this.scene.get(id);
-        if (o) items.push({ id, ox: o.x, oy: o.y });
+        if (o && !o.locked) items.push({ id, ox: o.x, oy: o.y });
       }
+      if (!items.length) return; // 全锁，不拖
+      this.scene.beginAct();
       this._dragState = {
         items,
         startX: ev.clientX,

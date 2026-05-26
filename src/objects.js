@@ -350,7 +350,7 @@ export function makeImageObject({ blob, naturalW, naturalH, x, y, targetLongWorl
     _displayUrl: null,
     naturalW,
     naturalH,
-    aspectLocked: true,
+    locked: false,    // 锁住 = 禁止拖 / 转 / 缩。aspect-lock-on-corner 是默认行为，内化进 resizeRect 里。
     interp: "linear", // 像素图切到 "nearest"
     rotation: 0,      // 度数；CSS rotate 围绕 obj 中心
     x: Math.round(x - w / 2),
@@ -360,14 +360,11 @@ export function makeImageObject({ blob, naturalW, naturalH, x, y, targetLongWorl
   };
 }
 
-export function makeViewportObject({ x, y, w = 512, h = 512, resW = 1024, resH = 1024, interp = "linear", binding = "", aspectLocked = true }) {
-  // 锁定时强制 rect 比例 = 输出比例（默认 1:1）
-  if (aspectLocked) {
-    const ra = resW / resH;
-    // 保持 max(w,h)，调小边
-    if (w / h > ra) w = Math.round(h * ra);
-    else h = Math.round(w / ra);
-  }
+export function makeViewportObject({ x, y, w = 512, h = 512, resW = 1024, resH = 1024, interp = "linear", binding = "" }) {
+  // viewport rect 比例和 res 比例永远一致 —— 创建时就拍平
+  const ra = resW / resH;
+  if (w / h > ra) w = Math.round(h * ra);
+  else h = Math.round(w / ra);
   return {
     type: "viewport",
     x: Math.round(x - w / 2),
@@ -375,11 +372,11 @@ export function makeViewportObject({ x, y, w = 512, h = 512, resW = 1024, resH =
     w: Math.round(w),
     h: Math.round(h),
     rotation: 0,
+    locked: false,    // 同 image
     resW,
     resH,
     interp,
     binding,
-    aspectLocked,
   };
 }
 
@@ -419,7 +416,7 @@ export function anchorWorldPos(obj, anchor) {
 }
 
 // 把手拖拽（支持任意 rotation）：保持 anchor world 不动，cursor 决定新 rect 的对角 / 对边。
-// corner + aspectLocked → uniform scale。edge → 永远改一轴（用户拖边 = 想改比例）。
+// corner → 永远 uniform scale（图 / viewport 都不希望被斜拉）。edge → 1D 自由拉伸（用户拖边 = 想改比例）。
 export function resizeRect(obj, anchor, cursorWX, cursorWY, anchorStartWX, anchorStartWY) {
   const { sgnX, sgnY, isCorner } = anchorLocalOffset(obj, anchor);
   const rad = (obj.rotation || 0) * Math.PI / 180;
@@ -431,8 +428,8 @@ export function resizeRect(obj, anchor, cursorWX, cursorWY, anchorStartWX, ancho
   let newH = (sgnY !== 0) ? sgnY * dLocal.y : obj.h;
   if (newW < MIN_SIZE) newW = MIN_SIZE;
   if (newH < MIN_SIZE) newH = MIN_SIZE;
-  // corner 锁定比例 → uniform scale
-  if (isCorner && obj.aspectLocked && obj.w > 0 && obj.h > 0) {
+  // corner 永远 uniform scale 保留 aspect
+  if (isCorner && obj.w > 0 && obj.h > 0) {
     const aspect = obj.w / obj.h;
     if (newW / newH > aspect) newW = newH * aspect;
     else newH = newW / aspect;
@@ -493,10 +490,10 @@ export function rotatedAABB(obj) {
   return { x0, y0, x1, y1 };
 }
 
-// 当 viewport aspectLocked，且其 rect 比例变化（如边把手拉过之后），让 res 跟上 rect。
-// 保留 max(resW, resH)，缩另一个。返回 null 表示比例没变 / 无需调整。
+// viewport：rect 比例变了（边把手拉了）就让 res 跟上。保留 max(resW, resH)，缩另一个。
+// 返回 null 表示比例没变 / 无需调整。viewport rect 和 res 永远同纵横比，这是「always-on」行为。
 export function syncViewportResToRect(vp) {
-  if (!vp.aspectLocked || vp.type !== "viewport") return null;
+  if (vp.type !== "viewport") return null;
   const targetAspect = vp.w / vp.h;
   const curAspect = vp.resW / vp.resH;
   if (Math.abs(targetAspect - curAspect) < 1e-4) return null;

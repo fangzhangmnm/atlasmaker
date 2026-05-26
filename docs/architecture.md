@@ -8,7 +8,8 @@
 - 无限工作台（pan / zoom），双层渲染（images / viewports），viewport 永远在最上面
 - 粘贴图片（Ctrl+V）落到视野中心，1 世界 px = 1 物理 px（DPI-aware）
 - 选择 / 拖动单个对象。viewport 走「边框选择」—— body 透明可穿透到下面的图
-- 8 把手 resize（4 角 aspect-locked，4 边自由拉伸）+ 1 旋转把手（顶部外侧，shift 吸附 15°）
+- 8 把手 resize（4 角 always aspect-locked，4 边自由拉伸）+ 1 旋转把手（顶部外侧，shift 吸附 15°）
+- 每个 obj 可锁定（🔒 / 🔓 浮窗按钮）—— locked obj 禁止拖 / 转 / 缩，选框变虚线 + 灰色，handle 不渲染
 - 旋转：每个 obj 有 `rotation` 字段（度数），CSS `transform: rotate` 实现；resize 数学全部走 anchor-world + 反旋转的统一公式
 - 多选：marquee 空白处框选；shift-click 加入 / 取消；多选时 union AABB 高亮，禁用 resize 把手；拖任何一个 → 一起挪
 - Undo / Redo：snapshot 法，`Ctrl+Z` / `Ctrl+Shift+Z` / `Ctrl+Y`。每次 mutation 前自动 snap，拖拽 / resize 走 beginAct/endAct 不重复入栈
