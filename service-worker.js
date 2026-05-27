@@ -19,6 +19,8 @@ const PRECACHE_URLS = [
   "./src/board.js",
   "./src/objects.js",
   "./src/input.js",
+  "./src/btp.js",
+  "./src/vendor/btp/v1/btp.js",
 ];
 
 self.addEventListener("install", (event) => {

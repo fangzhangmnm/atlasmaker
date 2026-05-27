@@ -3,6 +3,27 @@
 > 谁先看到这个文档：下一位接手的 AI / 我自己回来续命。
 > 这只是「一期决策」，不要当圣经 —— proposal 会更新，遇到大决策先回去重读 [../journal/20260524 proposal.md](../../journal/20260524 proposal.md)。
 
+## Blender 接（v8 起）
+
+`src/vendor/btp/v1/` 是从兄弟仓库 `../../BlenderTextureProtocol/protocol/v1/` 拷过来的协议 + JS client（**vendored**，[参 README](../src/vendor/btp/README.md)）。AtlasMaker 通过 `src/btp.js` 里的 `BTPManager` 包一层，处理连接状态 + 缓存 + push 路由。
+
+启动时 `btp.probe()` 调 `GET /v1/scene`。状态写到顶栏右侧的「Blender · …」pill：
+- 灰：未连接 / idle
+- 黄脉冲：探活中
+- 绿：连上了；label 显示当前 `.blend` 文件名
+- 红：探不到（点 pill 重试）
+
+Viewport 浮窗的 binding 输入：`<input list="btpTextureList">`，focus 时调 `listTextures()` 填 datalist 做 autocomplete。**只在连接成功时刷新**。
+
+「推到 Blender」按钮：
+1. `rasterizeViewport(vp)` → PNG blob（自然分辨率，详见 #6a）
+2. `btp.push(binding, blob)` 先 `getTextureMetadata` 试探：404 → `createTexture` 新建；200 → `putTextureData` 覆盖
+3. toast 显示「已新建」/「已更新」
+
+**CORS**：addon 0.1.1 起在 http_server.py 加了 `Access-Control-Allow-Origin: *` + `do_OPTIONS` preflight handler。AtlasMaker 跑 `localhost:8765` 调 BTP 的 `localhost:18765` 是跨 origin，没 CORS 浏览器会拦。本机 localhost-only + 用户主动开启，`*` 可接受。
+
+**未来 GitHub Pages（HTTPS）调本地 BTP**：浏览器 mixed-content 阻挡。届时换 WebRTC transport（spec 已经留 hook）或者教用户把 AtlasMaker pin 到 localhost 跑。
+
 ## 一期范围
 
 - 无限工作台（pan / zoom），双层渲染（images / viewports），viewport 永远在最上面

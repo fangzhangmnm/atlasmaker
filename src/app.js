@@ -14,6 +14,7 @@ import {
   HANDLE_ANCHORS,
 } from "./objects.js";
 import { Input } from "./input.js";
+import { BTPManager, BTPError } from "./btp.js";
 
 const boardEl = document.getElementById("board");
 const worldEl = document.getElementById("world");
@@ -102,6 +103,8 @@ const vpResH = document.getElementById("vpResH");
 const vpInterp = document.getElementById("vpInterp");
 const vpBinding = document.getElementById("vpBinding");
 const vpLock = document.getElementById("vpLock");
+const vpPushBtn = document.getElementById("vpPush");
+const btpDatalist = document.getElementById("btpTextureList");
 const vpExportBtn = document.getElementById("vpExport");
 const vpCopyBtn = document.getElementById("vpCopy");
 const vpDeleteBtn = document.getElementById("vpDelete");
@@ -206,6 +209,60 @@ vpCopyBtn.addEventListener("click", async () => {
 vpDeleteBtn.addEventListener("click", () => {
   const sel = scene.firstSelected();
   if (sel) scene.act(() => scene.remove(sel.id));
+});
+
+// ----- viewport binding & push to Blender -----
+function onBindingChange() {
+  const sel = scene.firstSelected();
+  if (!sel || sel.type !== "viewport") return;
+  if (sel.binding === vpBinding.value) return;
+  scene.act(() => scene.update(sel.id, { binding: vpBinding.value }));
+}
+vpBinding.addEventListener("change", onBindingChange);
+vpBinding.addEventListener("blur", onBindingChange);
+
+vpBinding.addEventListener("focus", async () => {
+  if (!btp.isConnected()) return;
+  try {
+    const list = await btp.listTextures();
+    btpDatalist.innerHTML = "";
+    for (const t of list) {
+      const opt = document.createElement("option");
+      opt.value = t.name;
+      opt.textContent = `${t.width}×${t.height}`;
+      btpDatalist.appendChild(opt);
+    }
+  } catch (_) {}
+});
+
+vpPushBtn.addEventListener("click", async () => {
+  const sel = scene.firstSelected();
+  if (!sel || sel.type !== "viewport") return;
+  if (!btp.isConnected()) {
+    showActionToast("Blender 未连接 —— 点顶栏「Blender」图标重试");
+    return;
+  }
+  const name = (sel.binding || "").trim();
+  if (!name) {
+    showActionToast("先填 binding 名");
+    vpBinding.focus();
+    return;
+  }
+  vpPushBtn.disabled = true;
+  showActionToast(`推送中 ${sel.resW}×${sel.resH} → ${name}…`, 60000);
+  try {
+    const blob = await rasterizeViewport(sel);
+    if (!blob) throw new Error("光栅化失败");
+    const { action } = await btp.push(name, blob);
+    showActionToast(action === "created"
+      ? `已新建 Blender texture: ${name} (${sel.resW}×${sel.resH})`
+      : `已更新 Blender texture: ${name} (${sel.resW}×${sel.resH})`);
+  } catch (e) {
+    const msg = e instanceof BTPError ? `${e.code}: ${e.message}` : (e.message || String(e));
+    showActionToast(`推送失败：${msg}`, 4000);
+  } finally {
+    vpPushBtn.disabled = false;
+  }
 });
 
 // ----- 图片浮窗 wiring -----
@@ -593,6 +650,31 @@ function downloadBlob(blob, name) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+// ----- BTP 连接状态 pill -----
+const btpPill = document.getElementById("btpPill");
+const btpLabel = document.getElementById("btpLabel");
+const btp = new BTPManager();
+btp.onChange(() => {
+  btpPill.dataset.state = btp.state;
+  if (btp.state === "connected") {
+    const fp = (btp.scene && btp.scene.blend_filepath) || "";
+    const base = fp ? fp.split(/[\\/]/).pop() : "(未保存)";
+    btpLabel.textContent = `Blender · ${base}`;
+    btpPill.title = `已连接到 Blender（点击重新探活）\n${fp || "(未保存的 .blend)"}`;
+  } else if (btp.state === "connecting") {
+    btpLabel.textContent = "Blender · 探活中";
+    btpPill.title = "正在探活…";
+  } else if (btp.state === "disconnected") {
+    btpLabel.textContent = "Blender · 未连接";
+    btpPill.title = `Blender 不可达\n${btp.lastError ? (btp.lastError.message || btp.lastError) : ""}\n点击重试`;
+  } else {
+    btpLabel.textContent = "Blender";
+  }
+});
+btpPill.addEventListener("click", () => btp.probe());
+// 启动时探活一次（不要 await，让 UI 先出来）
+btp.probe();
 
 // ----- 版本号 -----
 const versionLabel = document.getElementById("versionLabel");

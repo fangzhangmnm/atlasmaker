@@ -1,0 +1,11 @@
+{
+  "type": "module",
+  "name": "btp-protocol-v1",
+  "version": "1.0.0",
+  "description": "Blender Texture Protocol client (v1). Bundled with spec.md.",
+  "main": "btp.js",
+  "exports": {
+    ".": "./btp.js"
+  },
+  "license": "MIT"
+}

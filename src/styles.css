@@ -263,6 +263,36 @@ body[data-tool="viewport"] .board { cursor: crosshair; }
 
 .spacer { flex: 1; min-width: 8px; }
 
+.btp-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--ink-soft);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+.btp-pill:hover { background: var(--bg-soft); }
+.btp-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ink-soft);
+  transition: background 0.15s ease;
+}
+.btp-pill[data-state="connecting"] .btp-dot { background: #d8b48a; animation: btp-pulse 1s infinite; }
+.btp-pill[data-state="connected"]  .btp-dot { background: #58a35a; }
+.btp-pill[data-state="disconnected"] .btp-dot { background: var(--danger); }
+@keyframes btp-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.3; }
+}
+
 /* HUD */
 .hud {
   position: fixed;

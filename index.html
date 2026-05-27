@@ -95,6 +95,11 @@
         </svg>
       </button>
 
+      <button class="btp-pill" id="btpPill" type="button" title="Blender 连接状态（点击重试）">
+        <span class="btp-dot" aria-hidden="true"></span>
+        <span class="btp-label" id="btpLabel">Blender</span>
+      </button>
+
       <button class="tool" id="themeButton" type="button" title="主题">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
@@ -133,8 +138,12 @@
           </select>
         </label>
         <label class="row"><span class="row-label">绑定</span>
-          <input id="vpBinding" type="text" placeholder="Blender texture 名（暂未启用）" disabled />
+          <input id="vpBinding" type="text" list="btpTextureList" placeholder="Blender texture 名（留空 = 不绑）" autocomplete="off" />
+          <datalist id="btpTextureList"></datalist>
         </label>
+        <div class="row">
+          <button class="sheet-action" id="vpPush" type="button" title="按当前 binding 推送：存在就 PUT 覆盖，不存在就 POST 新建">推到 Blender</button>
+        </div>
         <div class="row z-row">
           <button class="z-btn" id="vpZTop" type="button" title="顶层 (Ctrl+Shift+])">⤒</button>
           <button class="z-btn" id="vpZUp" type="button" title="上移 (Ctrl+])">↑</button>
