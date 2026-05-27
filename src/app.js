@@ -344,22 +344,14 @@ async function applyAtlasZipBlob(atlasBlob, { passwordHint = null } = {}) {
   let entries;
   let usedPassword = null;
   if (fmt === "encrypted") {
-    // 重试循环：用户输错密码可以立刻再输；按取消才真的退出。
     let pw = passwordHint;
-    let firstTry = true;
-    while (true) {
-      if (!pw) {
-        pw = await promptPassword(firstTry ? "输入密码以解开加密会话" : "密码错，再试一次（取消放弃）");
-      }
-      if (pw === null) throw new Error("已取消（未输密码）");
-      try {
-        entries = await zipUnpackEncrypted(atlasBlob, pw);
-        usedPassword = pw;
-        break;
-      } catch (_) {
-        pw = null;
-        firstTry = false;
-      }
+    if (!pw) pw = await promptPassword("输入密码以解开加密会话");
+    if (pw === null) throw new Error("已取消（未输密码）");
+    try {
+      entries = await zipUnpackEncrypted(atlasBlob, pw);
+      usedPassword = pw;
+    } catch (e) {
+      throw new Error(e.message || "密码错或文件损坏");
     }
   } else {
     entries = await zipUnpack(atlasBlob);
@@ -431,9 +423,11 @@ async function openSessionByPath(path) {
   if (_dirty && !_saving) await saveCurrentSession();
   const pkg = await storage.getSession(path);
   if (!pkg) { showActionToast(`找不到：${path}`, 4000); return; }
+  // 如果是重新打开「实际已经在内存里那个 session」，复用 memory 里的密码免再 prompt
+  const passwordHint = (path === _activeIDBPath && _currentEncrypted) ? _currentSessionPassword : null;
   _loading = true;
   try {
-    await applyAtlasZipBlob(pkg.atlas);
+    await applyAtlasZipBlob(pkg.atlas, { passwordHint });
     sessionInput.value = stemOfPath(path);
     applySessionTitle();
   } finally { _loading = false; }
@@ -1360,13 +1354,25 @@ renderOverlay();
 setSaveStatus("saved");
 
 // 启动时尝试从 IDB 恢复上次 session
-loadCurrentSession().then(() => {
-  // 确保启动后 _activeIDBPath/_activeCloudPath 跟得上（loadCurrentSession 内部已 setCurrentPath，
-  // 我们这里把 active path 也指过去）
-  const path = getCurrentPath();
-  _activeIDBPath = path;
-  _activeCloudPath = path;
-}).catch((e) => console.warn("初始加载失败", e));
+loadCurrentSession().then((ok) => {
+  if (ok) {
+    const path = getCurrentPath();
+    _activeIDBPath = path;
+    _activeCloudPath = path;
+  }
+}).catch((e) => {
+  console.warn("初始加载失败", e);
+  // 关键修复：boot 时 apply 失败（最常见 = 加密 session 被取消密码）
+  // _activeIDBPath 还指向那个加密 path → 用户随便改一下 → save 会把它当 rename → **删除加密 session** = 数据丢
+  // 重置到 safe default，user 后续 save 不会误删；localStorage currentPath 保留 = 下次 boot 仍试着加载
+  const lastPath = getCurrentPath();
+  const safePath = sessionFileName(DEFAULT_SESSION_NAME);
+  _activeIDBPath = safePath;
+  _activeCloudPath = null;
+  if (e && e.message && e.message.includes("已取消")) {
+    showActionToast(`上次会话「${stemOfPath(lastPath)}」需要密码，未加载。在会话列表点「重新打开」重试。`, 8000);
+  }
+});
 
 // ----- Ctrl+C 复制选中图片到系统剪贴板（让 AtlasMaker 也能当图版用）-----
 async function blobToPng(blob) {
@@ -1444,13 +1450,19 @@ async function refreshSessionsList() {
 
     const actions = document.createElement("div");
     actions.className = "actions";
-    if (key !== cur) {
+    // 打开按钮永远显示。current 行也显示「重新打开」—— 用于 boot 失败后重试 (加密 session 取消密码的恢复路径)
+    // 否则用户卡在「这个 session 在 localStorage 里是 current，但实际 scene 空着，又没按钮」的死角
+    {
       const openBtn = document.createElement("button");
-      openBtn.textContent = "打开";
+      openBtn.textContent = key === cur ? "重新打开" : "打开";
       openBtn.addEventListener("click", async (e) => {
         e.stopPropagation();
-        await openSessionByPath(key);
-        closeSessionsModal();
+        try {
+          await openSessionByPath(key);
+          closeSessionsModal();
+        } catch (err) {
+          showActionToast(`打开失败：${err.message || err}`, 4000);
+        }
       });
       actions.appendChild(openBtn);
     }

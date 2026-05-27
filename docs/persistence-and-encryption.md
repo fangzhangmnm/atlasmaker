@@ -223,3 +223,20 @@ if (typeof body === "string" || body instanceof ArrayBuffer || ArrayBuffer.isVie
 ### IDB DB_VERSION bump 不会自动丢数据
 
 `DB_VERSION` 仅 trigger `onupgradeneeded`。回调里你决定怎么做：additive（新建 store）= 零丢失，destructive（删 store）= 丢。`ATLASMAKER_VERSION`（app/SW cache 版本号）跟 IDB 完全无关，bump 100 次也不丢 IDB 一个字节。
+
+### Boot 失败的「幽灵 current」陷阱（0.7.2 修）
+
+启动时 `loadCurrentSession` 会从 `localStorage.currentPath` 拉，如果它是加密 session 而用户取消密码 → `applyAtlasZipBlob` throw → scene 还是初始 blank。
+
+陷阱 1：`_activeIDBPath` 在文件顶部以 `let _activeIDBPath = getCurrentPath()` 初始化，**已经**指向那个加密 path。用户在 blank scene 上做任何修改 → Ctrl+S → `saveCurrentSession` 把 `pathFromInput()`（= "未命名"）当 newPath，oldPath = "加密 session 路径" → 当作 rename → **`storage.deleteSession(old)` 直接把加密 session 删了**。数据丢失。
+
+陷阱 2：sessions 模态原本 `key === cur` 不画「打开」按钮 —— 用户连重试都没地方点。
+
+修复（都在 boot 的 `.catch`）：
+1. `_activeIDBPath = sessionFileName(DEFAULT_SESSION_NAME)` —— 重置到 safe default，后续 save 不会误删加密
+2. `_activeCloudPath = null` —— 同理，避免 push 误删
+3. `localStorage.currentPath` **不**重置，下次 boot 还能试着加载
+4. Toast 提示用户去模态重试
+5. 模态「打开」按钮永远显示，current 行改成「重新打开」label
+
+教训：「`localStorage` 里宣称的 current」≠ 「scene 里实际加载的 session」。任何会基于「current」做 destructive 操作（save 时的 rename-delete-old）的代码，都要确认 current 是「实际加载过」的状态，而不是「localStorage 里记的、但加载失败过的」状态。
