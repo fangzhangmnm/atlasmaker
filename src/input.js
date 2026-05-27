@@ -2,7 +2,7 @@
 // 工具：select（默认）、hand、viewport（拖框生成）。
 // 通用：中键 / 空格临时变 hand；滚轮 zoom（光标为锚点，holding Ctrl 更快）。
 
-import { rotatedAABB } from "./objects.js";
+import { rotatedAABB, nextDefaultViewportBinding } from "./objects.js";
 
 const MIDDLE_BTN = 1;     // ev.button: 0=左, 1=中, 2=右
 const MIDDLE_MASK = 4;    // ev.buttons: 1=左 2=右 4=中
@@ -200,7 +200,11 @@ export class Input {
       n.style.top = `${y}px`;
       n.style.width = `${wW}px`;
       n.style.height = `${hH}px`;
-      this._marqueeState.label.textContent = `${Math.round(wW)}×${Math.round(hH)}`;
+      // 让 marquee label 显示马上要分到的 default binding —— WYSIWYG，落下后这个就是 viewport 上的字
+      if (!this._marqueeState.defaultName) {
+        this._marqueeState.defaultName = nextDefaultViewportBinding(this.scene);
+      }
+      this._marqueeState.label.textContent = this._marqueeState.defaultName;
       return;
     }
   };

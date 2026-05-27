@@ -311,7 +311,7 @@ export class Scene {
       }
       const label = document.createElement("span");
       label.className = "vp-label";
-      label.textContent = `${obj.resW}×${obj.resH}`;
+      label.textContent = obj.binding || "";
       el.appendChild(label);
     }
     this._applyTransform(obj, el);
@@ -328,7 +328,7 @@ export class Scene {
     el.style.transform = obj.rotation ? `rotate(${obj.rotation}deg)` : "";
     if (obj.type === "viewport") {
       const label = el.querySelector(".vp-label");
-      if (label) label.textContent = `${obj.resW}×${obj.resH}`;
+      if (label) label.textContent = obj.binding || "";
     } else if (obj.type === "image") {
       const img = el.querySelector("img");
       if (img) img.style.imageRendering = obj.interp === "nearest" ? "pixelated" : "auto";
@@ -381,6 +381,22 @@ export function makeViewportObject({ x, y, w = 512, h = 512, resW = 1024, resH =
     interp,
     binding,
   };
+}
+
+// 算下一个默认 viewport binding 名：扫现有 viewport 的 binding，找到 atlas_texture_NNN 最大的，+1。
+// prefix 默认带 "atlas_" 前缀让 Blender 里一眼能认出来源。
+export function nextDefaultViewportBinding(scene, prefix = "atlas_texture_") {
+  const re = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}(\\d+)$`);
+  let max = 0;
+  for (const o of scene.objects.values()) {
+    if (o.type !== "viewport") continue;
+    const m = re.exec(o.binding || "");
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (n > max) max = n;
+    }
+  }
+  return `${prefix}${String(max + 1).padStart(3, "0")}`;
 }
 
 export const HANDLE_ANCHORS = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];

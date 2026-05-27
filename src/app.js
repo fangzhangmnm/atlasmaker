@@ -10,6 +10,7 @@ import {
   handleWorldPositions,
   rotatedAABB,
   syncViewportResToRect,
+  nextDefaultViewportBinding,
   HANDLE_ANCHORS,
 } from "./objects.js";
 import { Input } from "./input.js";
@@ -382,8 +383,6 @@ const vpDeleteBtn = document.getElementById("vpDelete");
 
 // ----- 图片属性浮窗 -----
 const imgPanel = document.getElementById("imagePanel");
-const imgNaturalLabel = document.getElementById("imgNaturalLabel");
-const imgRectLabel = document.getElementById("imgRectLabel");
 const imgLock = document.getElementById("imgLock");
 const imgInterp = document.getElementById("imgInterp");
 const imgDeleteBtn = document.getElementById("imgDelete");
@@ -415,8 +414,6 @@ function refreshPanels() {
   } else if (sel && sel.type === "image") {
     imgPanel.classList.remove("hidden");
     vpPanel.classList.add("hidden");
-    imgNaturalLabel.textContent = `${sel.naturalW}×${sel.naturalH}`;
-    imgRectLabel.textContent = `${sel.w}×${sel.h}`;
     imgLock.setAttribute("aria-pressed", sel.locked ? "true" : "false");
     imgLock.textContent = sel.locked ? "🔒" : "🔓";
     imgInterp.value = sel.interp || "linear";
@@ -610,7 +607,8 @@ const input = new Input({
   },
   onViewportFinish: ({ x, y, w, h }) => {
     scene.act(() => {
-      const obj = makeViewportObject({ x, y, w, h });
+      const binding = nextDefaultViewportBinding(scene);
+      const obj = makeViewportObject({ x, y, w, h, binding });
       scene.add(obj);
       scene.select(obj.id, false);
     });
