@@ -83,10 +83,8 @@ for (const [name, btn] of Object.entries(toolButtons)) {
 document.getElementById("fitButton").addEventListener("click", () => doFit());
 function doFit() { board.fitTo(scene.bboxes()); }
 
-// 导入 / 导出
-document.getElementById("exportButton").addEventListener("click", () => exportCurrentSceneAsZip());
+// 导入 / 导出（按钮已搬进汉堡菜单；这里只挂 file picker）
 const importInput = document.getElementById("importFile");
-document.getElementById("importButton").addEventListener("click", () => importInput.click());
 importInput.addEventListener("change", () => {
   if (importInput.files && importInput.files[0]) {
     importSceneFromZipFile(importInput.files[0]);
@@ -436,14 +434,56 @@ window.addEventListener("pagehide", () => {
   if (_dirty && !_saving) saveCurrentSession().catch(() => {});
 });
 
-// ----- 主题 -----
+// ----- 主题 + 汉堡菜单 -----
 const THEMES = ["auto", "day", "night"];
-document.getElementById("themeButton").addEventListener("click", () => {
+const THEME_LABELS = { auto: "自动", day: "日", night: "夜" };
+
+function cycleTheme() {
   const cur = document.documentElement.getAttribute("data-theme") || "auto";
   const next = THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length];
   document.documentElement.setAttribute("data-theme", next);
   try { localStorage.setItem("atlasmaker.theme", next); } catch (_) {}
+  updateThemeMenuLabel();
+}
+function updateThemeMenuLabel() {
+  const cur = document.documentElement.getAttribute("data-theme") || "auto";
+  const lbl = document.getElementById("menuThemeLabel");
+  if (lbl) lbl.textContent = `主题：${THEME_LABELS[cur] || cur}`;
+}
+updateThemeMenuLabel();
+
+const hamburgerBtn = document.getElementById("hamburgerBtn");
+const hamburgerMenu = document.getElementById("hamburgerMenu");
+function openHamburger() {
+  const r = hamburgerBtn.getBoundingClientRect();
+  hamburgerMenu.style.top = `${r.bottom + 6}px`;
+  hamburgerMenu.style.right = `${Math.max(8, window.innerWidth - r.right)}px`;
+  hamburgerMenu.classList.remove("hidden");
+  hamburgerBtn.setAttribute("aria-expanded", "true");
+}
+function closeHamburger() {
+  hamburgerMenu.classList.add("hidden");
+  hamburgerBtn.setAttribute("aria-expanded", "false");
+}
+hamburgerBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (hamburgerMenu.classList.contains("hidden")) openHamburger();
+  else closeHamburger();
 });
+document.addEventListener("click", (e) => {
+  if (hamburgerMenu.classList.contains("hidden")) return;
+  if (hamburgerMenu.contains(e.target) || hamburgerBtn.contains(e.target)) return;
+  closeHamburger();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !hamburgerMenu.classList.contains("hidden")) closeHamburger();
+});
+window.addEventListener("resize", () => { if (!hamburgerMenu.classList.contains("hidden")) openHamburger(); });
+
+// 菜单项 → 动作
+document.getElementById("menuTheme").addEventListener("click", () => { cycleTheme(); });
+document.getElementById("menuImport").addEventListener("click", () => { closeHamburger(); importInput.click(); });
+document.getElementById("menuExport").addEventListener("click", () => { closeHamburger(); exportCurrentSceneAsZip(); });
 
 // ----- viewport 属性浮窗 -----
 const vpPanel = document.getElementById("viewportPanel");

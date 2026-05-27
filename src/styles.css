@@ -494,6 +494,40 @@ body[data-tool="viewport"] .board { cursor: crosshair; }
   padding: 4px;
 }
 
+/* 汉堡下拉菜单：position: fixed，JS 算位置；top-bar 的 overflow 不挡 */
+.dropdown-menu {
+  position: fixed;
+  min-width: 200px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 6px;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dropdown-menu.hidden { display: none; }
+.dropdown-menu .menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dropdown-menu .menu-item:hover { background: var(--bg-soft); }
+.dropdown-menu .menu-item svg { width: 18px; height: 18px; flex: 0 0 auto; color: var(--ink-soft); }
+.dropdown-menu .menu-sep { height: 1px; background: var(--line); margin: 4px 6px; }
+
 /* 通用 backdrop 半透明遮罩 */
 .backdrop {
   position: fixed;

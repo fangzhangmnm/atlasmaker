@@ -3,4 +3,4 @@
 // - index.html 用 <script> 加载到 window.ATLASMAKER_VERSION
 // - app.js 把它打到 HUD
 // 改 precached 文件就 bump 这个。
-self.ATLASMAKER_VERSION = "0.6.0-2026-05-27";
+self.ATLASMAKER_VERSION = "0.6.1-2026-05-27";
