@@ -290,6 +290,12 @@ export class Input {
       ev.preventDefault();
       return;
     }
+    // Ctrl+S 立刻保存（避开浏览器「保存网页」默认）
+    if ((ev.ctrlKey || ev.metaKey) && (ev.key === "s" || ev.key === "S") && !ev.shiftKey) {
+      if (this.hooks.onSave) this.hooks.onSave();
+      ev.preventDefault();
+      return;
+    }
     // 单字符工具切换（V 已经被 Ctrl+V 占用 → 不再绑 V 作工具，select 是默认）
     if (ev.key === "h" || ev.key === "H") this.setTool("hand");
     else if (ev.key === "r" || ev.key === "R") this.setTool("viewport");

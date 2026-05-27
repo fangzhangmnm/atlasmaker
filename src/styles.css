@@ -240,6 +240,18 @@ body[data-tool="viewport"] .board { cursor: crosshair; }
 .session-name:hover { background: var(--bg-soft); }
 .session-name:focus { background: var(--bg); border-color: var(--line); }
 
+.save-status {
+  font-size: 11px;
+  color: var(--ink-soft);
+  padding: 0 6px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.save-status[data-state="dirty"]  { color: var(--ink-soft); }
+.save-status[data-state="saving"] { color: var(--accent); }
+.save-status[data-state="saved"]  { color: var(--ink-soft); opacity: 0.6; }
+.save-status[data-state="error"]  { color: var(--danger); }
+
 .tool {
   width: 36px;
   height: 36px;

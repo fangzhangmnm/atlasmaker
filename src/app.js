@@ -1,5 +1,4 @@
-// AtlasMaker — 一期：无限工作台 + 粘贴图片 + viewport 框。
-// 没有持久化、没有 OneDrive，刷新会丢。两个一期之后从兄弟项目抄。
+// AtlasMaker — 无限工作台 + 粘贴图片 + viewport 框 + 持久化（IDB / ZIP）+ Blender 推送。
 
 import { Board } from "./board.js";
 import {
@@ -15,6 +14,10 @@ import {
 } from "./objects.js";
 import { Input } from "./input.js";
 import { BTPManager, BTPError } from "./btp.js";
+import * as storage from "./storage.js";
+import { zipPack, zipUnpack } from "./zip.js";
+
+const SCENE_FORMAT_VERSION = 1;
 
 const boardEl = document.getElementById("board");
 const worldEl = document.getElementById("world");
@@ -77,15 +80,183 @@ for (const [name, btn] of Object.entries(toolButtons)) {
 document.getElementById("fitButton").addEventListener("click", () => doFit());
 function doFit() { board.fitTo(scene.bboxes()); }
 
-// ----- session 名（占位，纯前端，无持久化） -----
+// 导入 / 导出
+document.getElementById("exportButton").addEventListener("click", () => exportCurrentSceneAsZip());
+const importInput = document.getElementById("importFile");
+document.getElementById("importButton").addEventListener("click", () => importInput.click());
+importInput.addEventListener("change", () => {
+  if (importInput.files && importInput.files[0]) {
+    importSceneFromZipFile(importInput.files[0]);
+    importInput.value = ""; // 允许选同名文件再次
+  }
+});
+
+// ----- session 名 + 持久化 -----
 const sessionInput = document.getElementById("sessionName");
+const saveStatusEl = document.getElementById("saveStatus");
+
 function applySessionTitle() {
   const name = sessionInput.value.trim() || "未命名";
   document.title = `${name} — AtlasMaker`;
 }
-sessionInput.addEventListener("input", applySessionTitle);
-sessionInput.addEventListener("change", applySessionTitle);
+sessionInput.addEventListener("input", () => { applySessionTitle(); scheduleSave(); });
+sessionInput.addEventListener("change", () => { applySessionTitle(); scheduleSave(); });
 applySessionTitle();
+
+// 自动保存：scene / board / sessionName 变 → 防抖 800ms 写 IDB。
+// Ctrl+S 立即 flush。导入 / 启动恢复时 _loading 防止把刚读进来的状态原样写回去。
+let _saveTimer = null;
+let _loading = false;
+const SAVE_DEBOUNCE = 800;
+
+function setSaveStatus(state) {
+  if (!saveStatusEl) return;
+  saveStatusEl.dataset.state = state;
+  saveStatusEl.textContent = ({
+    dirty:  "未保存",
+    saving: "保存中…",
+    saved:  "已保存",
+    error:  "保存失败",
+  })[state] || "";
+}
+
+function scheduleSave() {
+  if (_loading) return;
+  setSaveStatus("dirty");
+  if (_saveTimer) clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(() => { _saveTimer = null; saveCurrentScene(); }, SAVE_DEBOUNCE);
+}
+
+function flushSave() {
+  if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
+  return saveCurrentScene();
+}
+
+// 把当前 scene 序列化成 scene.json 文档（无 Blob，只引用 src）
+function makeSceneDoc(snap) {
+  const objects = Array.from(snap.objects.values()).map((o) => {
+    const { _displayUrl, blob, ...rest } = o;
+    return rest;
+  });
+  return {
+    format_version: SCENE_FORMAT_VERSION,
+    id: "current",
+    name: sessionInput.value,
+    updatedAt: Date.now(),
+    board: { ...board.viewport },
+    objects,
+    imageOrder: snap.imageOrder,
+    viewportOrder: snap.viewportOrder,
+  };
+}
+
+async function saveCurrentScene() {
+  setSaveStatus("saving");
+  try {
+    const snap = scene.snapshot();
+    // 先把所有 image 的 blob 落到 IDB blobs store —— put 是覆盖语义，重复写不会出错
+    for (const o of snap.objects.values()) {
+      if (o.type === "image" && o.src && o.blob) {
+        try { await storage.putBlob(o.src, o.blob); } catch (e) { console.warn("putBlob failed", o.src, e); }
+      }
+    }
+    const doc = makeSceneDoc(snap);
+    await storage.putScene("current", doc);
+    setSaveStatus("saved");
+  } catch (e) {
+    console.warn("save failed", e);
+    setSaveStatus("error");
+  }
+}
+
+async function loadCurrentScene() {
+  const doc = await storage.getScene("current");
+  if (!doc || !Array.isArray(doc.objects)) return false;
+  _loading = true;
+  try {
+    const paths = doc.objects.filter((o) => o.type === "image" && o.src).map((o) => o.src);
+    const blobMap = paths.length ? await storage.getBlobsBatch(paths) : {};
+    const objMap = new Map();
+    for (const o of doc.objects) {
+      const obj = { ...o };
+      if (obj.type === "image") {
+        obj.blob = obj.src ? blobMap[obj.src] : null;
+        obj._displayUrl = null;
+      }
+      objMap.set(obj.id, obj);
+    }
+    scene.restore({
+      objects: objMap,
+      imageOrder: doc.imageOrder || [],
+      viewportOrder: doc.viewportOrder || [],
+      selection: new Set(),
+    });
+    // restore 是「新基线」，不让 undo 跨越它
+    scene._undoStack.length = 0;
+    scene._redoStack.length = 0;
+    if (doc.board) board.setViewport(doc.board.tx, doc.board.ty, doc.board.scale);
+    if (typeof doc.name === "string") { sessionInput.value = doc.name; applySessionTitle(); }
+    setSaveStatus("saved");
+    return true;
+  } finally {
+    _loading = false;
+  }
+}
+
+// 把 scene → ZIP blob（scene.json + images/*）
+async function packCurrentSceneZip() {
+  const snap = scene.snapshot();
+  const doc = makeSceneDoc(snap);
+  const entries = [
+    { path: "scene.json", data: JSON.stringify(doc, null, 2) },
+  ];
+  for (const o of snap.objects.values()) {
+    if (o.type === "image" && o.src && o.blob) {
+      entries.push({ path: o.src, data: o.blob });
+    }
+  }
+  return { blob: await zipPack(entries), doc, imageCount: entries.length - 1 };
+}
+
+async function exportCurrentSceneAsZip() {
+  try {
+    const { blob, imageCount } = await packCurrentSceneZip();
+    const safeName = (sessionInput.value || "atlas").replace(/[\\/:*?"<>|]+/g, "_").trim() || "atlas";
+    downloadBlob(blob, `${safeName}.atlas.zip`);
+    showActionToast(`已导出（${imageCount} 张图）`);
+  } catch (e) {
+    showActionToast(`导出失败：${e.message || e}`, 4000);
+  }
+}
+
+async function importSceneFromZipFile(file) {
+  try {
+    const entries = await zipUnpack(file);
+    const sceneBytes = entries["scene.json"];
+    if (!sceneBytes) throw new Error("ZIP 里没有 scene.json");
+    const doc = JSON.parse(new TextDecoder().decode(sceneBytes));
+    if (doc.format_version !== SCENE_FORMAT_VERSION) {
+      console.warn("scene.json format_version", doc.format_version, "vs current", SCENE_FORMAT_VERSION);
+    }
+    const blobEntries = [];
+    for (const [path, bytes] of Object.entries(entries)) {
+      if (path === "scene.json") continue;
+      const ext = path.split(".").pop().toLowerCase();
+      const mime = (ext === "jpg" || ext === "jpeg") ? "image/jpeg" : "image/png";
+      blobEntries.push([path, new Blob([bytes], { type: mime })]);
+    }
+    await storage.putBlobsBatch(blobEntries);
+    await storage.putScene("current", { ...doc, id: "current", updatedAt: Date.now() });
+    await loadCurrentScene();
+    showActionToast(`已导入：${doc.name || "未命名"}（${blobEntries.length} 张图）`);
+  } catch (e) {
+    showActionToast(`导入失败：${e.message || e}`, 5000);
+  }
+}
+
+// 钩子：scene / board 变 → 自动保存
+board.onChange(() => scheduleSave());
+scene.onChange(() => scheduleSave());
 
 // ----- 主题 -----
 const THEMES = ["auto", "day", "night"];
@@ -325,11 +496,17 @@ const input = new Input({
   scene,
   onTool: setActiveTool,
   onPaste: ({ blob, naturalW, naturalH, x, y, targetLongWorld }) => {
+    const ext = (blob.type && blob.type.includes("jpeg")) ? "jpg" : "png";
+    const uid = (typeof crypto !== "undefined" && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    const src = `images/${uid}.${ext}`;
     scene.act(() => {
-      const obj = makeImageObject({ blob, naturalW, naturalH, x, y, targetLongWorld });
+      const obj = makeImageObject({ blob, src, naturalW, naturalH, x, y, targetLongWorld });
       scene.add(obj);
       scene.select(obj.id, false);
     });
+    // scheduleSave 由 scene.onChange 自动触发；不在这里再调一次
   },
   onViewportFinish: ({ x, y, w, h }) => {
     scene.act(() => {
@@ -340,6 +517,7 @@ const input = new Input({
   },
   hooks: {
     onFit: doFit,
+    onSave: () => flushSave(),
     onDelete: () => {
       if (!scene.selection.size) return;
       scene.act(() => {
@@ -731,3 +909,7 @@ if ("serviceWorker" in navigator && !LOCAL_DEV_HOSTS.has(location.hostname)) {
 
 refreshHud();
 renderOverlay();
+setSaveStatus("saved");
+
+// 启动时尝试从 IDB 恢复上次 session
+loadCurrentScene().catch((e) => console.warn("初始加载失败", e));

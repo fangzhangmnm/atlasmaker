@@ -20,6 +20,8 @@ const PRECACHE_URLS = [
   "./src/objects.js",
   "./src/input.js",
   "./src/btp.js",
+  "./src/storage.js",
+  "./src/zip.js",
   "./src/vendor/btp/v1/btp.js",
 ];
 

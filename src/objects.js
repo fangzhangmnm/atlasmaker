@@ -339,13 +339,16 @@ export class Scene {
 // 创建图片对象。x,y = 想要的中心点（世界坐标）。blob = 不可变源数据。
 // 显示用 URL 由 Scene._renderNode 懒生成、随对象生命周期销毁，对象之间不共享 URL（duplicate 也是各自一份 URL）。
 // 原始分辨率（naturalW/H）单独存，给导出 / 后期高质量光栅化用。
-export function makeImageObject({ blob, naturalW, naturalH, x, y, targetLongWorld }) {
+// src = "images/<uuid>.<ext>" —— 既是 IDB blobs 的 key，也是 ZIP 内的路径，跨载体一致。
+// blob 是运行时引用（不可变 Blob，duplicate 时多 obj 共享），存储 / 序列化时只保留 src。
+export function makeImageObject({ blob, src, naturalW, naturalH, x, y, targetLongWorld }) {
   const longNat = Math.max(naturalW, naturalH) || 1;
   const factor = (targetLongWorld && targetLongWorld > 0) ? (targetLongWorld / longNat) : 1;
   const w = Math.max(8, Math.round(naturalW * factor));
   const h = Math.max(8, Math.round(naturalH * factor));
   return {
     type: "image",
+    src,
     blob,
     _displayUrl: null,
     naturalW,

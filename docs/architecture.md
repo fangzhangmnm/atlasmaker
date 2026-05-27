@@ -3,6 +3,88 @@
 > 谁先看到这个文档：下一位接手的 AI / 我自己回来续命。
 > 这只是「一期决策」，不要当圣经 —— proposal 会更新，遇到大决策先回去重读 [../journal/20260524 proposal.md](../../journal/20260524 proposal.md)。
 
+## 持久化（v9 起）
+
+**单一文件格式贯穿三个载体**（IDB / 本地 ZIP / 未来 OneDrive）：
+
+```
+zip 根 /
+  scene.json              ← 元数据：name, board, objects[], imageOrder, viewportOrder
+  images/<uuid>.png       ← 每张源图一个文件（uuid 文件名避免冲突，也跨设备不撞）
+  images/<uuid>.jpg
+```
+
+`scene.json` 里 image obj 只存 `src: "images/<uuid>.<ext>"`，不含 Blob 字节。Blob 单独存：
+- IDB：`blobs` store 按 `src` 字符串作 key 存 Blob
+- ZIP：按 path 写进 zip entry
+- OneDrive（下一轮）：每个 src 上传成 AppFolder 里的独立文件
+
+### 数据流
+
+```
+[paste]
+  → 生成 src = "images/<uuid>.<ext>" (crypto.randomUUID)
+  → scene.add(obj with blob + src)
+  → scene.onChange → scheduleSave()（debounce 800ms）
+
+[save]
+  → snapshot()                    （snap 含 Blob 引用）
+  → for each image: putBlob(src, blob)    （put 是覆盖语义，重复写无害）
+  → putScene("current", makeSceneDoc(snap))   （doc 里只保留 src，剥掉 blob / _displayUrl）
+
+[boot / refresh]
+  → loadCurrentScene()
+  → getScene("current") → doc
+  → getBlobsBatch(所有 src) → blob map（一个 readonly tx 一次性拿）
+  → 把 blob 挂回各 obj
+  → scene.restore({ objects, imageOrder, viewportOrder, selection: ∅ })
+  → undo / redo 栈清空（restore 是新基线，跨越载入不应该）
+
+[Ctrl+S]
+  → flushSave()（清 debounce timer + 立刻保存）
+
+[导出]
+  → packCurrentSceneZip() = zipPack(scene.json + 每个 image src 对应的 Blob)
+  → downloadBlob(<name>.atlas.zip)
+
+[导入]
+  → zipUnpack(file) → { path: Uint8Array }
+  → 把 images/* 包成 Blob 用 putBlobsBatch 写 IDB
+  → putScene("current", doc)
+  → loadCurrentScene()
+```
+
+### 保存状态指示
+
+顶栏 session 名后面跟一个小 label：
+- `已保存`（默认 / saved）
+- `未保存`（dirty，debounce 中）
+- `保存中…`（IDB tx 在飞）
+- `保存失败`（red，hover 看 console）
+
+### ZIP 实现
+
+自写 STORE-only zip writer / reader 在 [src/zip.js](../src/zip.js)，~150 行无 deps。STORE = method=0 不压缩。
+- PNG / JPEG 已经压缩过，DEFLATE 不省什么 CPU 反而费
+- 兼容 7z / Windows Explorer / unzip 读
+- 不接收 DEFLATE zip 的导入（抛错让用户重压；少见，多数工具默认 STORE 已经支持）
+
+### 不做（占位）
+
+- 多 session（一期单 session："current"，刷新就是上次状态）
+- 删除 obj 不回收对应 IDB blob 条目（leak；session 内可接受，将来加引用计数 GC）
+- 恢复时 image 加载是异步的，加载完前空白片刻（首屏体验可接受；将来如果慢再加 spinner）
+
+### OneDrive（下一轮）
+
+抄 [docs/architecture.md#11 PWA 更新检测的 LOCAL_DEV_HOSTS 套路类似]，外加：
+- MSAL redirect-only auth，scope `Files.ReadWrite.AppFolder + offline_access`
+- 每个 session 一个 OneDrive 子文件夹 / zip 文件（待定）
+- `If-Match: <etag>` 冲突检测，**Pattern B last-write-wins**（atlas 是 opaque blob 不可 merge）
+- 启动 local-first 渲染 IDB，云端 list 异步 append
+- 离线优先：MSAL silent probe 放后台，永不阻塞 boot
+- 详见调研：[../../WebPaint/docs/](../../WebPaint/docs/)（持久化设计文档共享给 WebPaint，下个 commit）
+
 ## Blender 接（v8 起）
 
 `src/vendor/btp/v1/` 是从兄弟仓库 `../../BlenderTextureProtocol/protocol/v1/` 拷过来的协议 + JS client（**vendored**，[参 README](../src/vendor/btp/README.md)）。AtlasMaker 通过 `src/btp.js` 里的 `BTPManager` 包一层，处理连接状态 + 缓存 + push 路由。

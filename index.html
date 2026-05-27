@@ -61,7 +61,8 @@
 
     <!-- 顶栏 -->
     <header class="top-bar" id="topBar">
-      <input id="sessionName" class="session-name" type="text" value="未命名" placeholder="未命名" aria-label="会话名（占位，未保存）" />
+      <input id="sessionName" class="session-name" type="text" value="未命名" placeholder="未命名" aria-label="会话名" />
+      <span id="saveStatus" class="save-status" title="自动保存到本地（Ctrl+S 立即）">已保存</span>
       <div class="tool-group" role="group" aria-label="工具">
         <button class="tool" id="toolSelect" type="button" data-tool="select" aria-pressed="true" title="选择 (V)">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -87,6 +88,22 @@
       </div>
 
       <div class="spacer"></div>
+
+      <button class="tool" id="importButton" type="button" title="导入 atlas zip">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+          <polyline points="17 8 12 3 7 8"></polyline>
+          <line x1="12" y1="3" x2="12" y2="15"></line>
+        </svg>
+      </button>
+      <input id="importFile" type="file" accept=".zip,application/zip" hidden />
+      <button class="tool" id="exportButton" type="button" title="导出当前画板为 atlas.zip">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+          <polyline points="7 10 12 15 17 10"></polyline>
+          <line x1="12" y1="15" x2="12" y2="3"></line>
+        </svg>
+      </button>
 
       <button class="tool" id="fitButton" type="button" title="适应所有 (0)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
