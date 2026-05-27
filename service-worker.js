@@ -22,7 +22,12 @@ const PRECACHE_URLS = [
   "./src/btp.js",
   "./src/storage.js",
   "./src/zip.js",
+  "./src/config.js",
+  "./src/auth.js",
+  "./src/graph.js",
+  "./src/cloud.js",
   "./src/vendor/btp/v1/btp.js",
+  "./src/vendor/msal/msal-browser.min.js",
 ];
 
 self.addEventListener("install", (event) => {

@@ -17,6 +17,7 @@ import { Input } from "./input.js";
 import { BTPManager, BTPError } from "./btp.js";
 import * as storage from "./storage.js";
 import { zipPack, zipUnpack } from "./zip.js";
+import * as cloud from "./cloud.js";
 
 const SCENE_FORMAT_VERSION = 1;
 
@@ -926,6 +927,122 @@ function downloadBlob(blob, name) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+// ----- OneDrive 同步 -----
+const cloudPill = document.getElementById("cloudPill");
+const cloudLabel = document.getElementById("cloudLabel");
+const cloudPushBtn = document.getElementById("cloudPushBtn");
+const cloudPullBtn = document.getElementById("cloudPullBtn");
+
+function refreshCloudUI() {
+  const signedIn = cloud.isSignedIn();
+  cloudPushBtn.disabled = !signedIn;
+  cloudPullBtn.disabled = !signedIn;
+  if (!cloud.isAuthConfigured()) {
+    cloudPill.dataset.state = "disconnected";
+    cloudLabel.textContent = "OneDrive 未配置";
+    cloudPill.title = "需要在 src/config.js 填 CLIENT_ID（Azure App Registration）";
+    return;
+  }
+  if (signedIn) {
+    const acc = cloud.getActiveAccount();
+    const tag = (acc?.username || acc?.name || "已登录").replace(/@.*/, "");
+    cloudPill.dataset.state = "connected";
+    cloudLabel.textContent = `OneDrive · ${tag}`;
+    cloudPill.title = `已登录：${acc?.username || ""}\n点击注销`;
+  } else {
+    cloudPill.dataset.state = "disconnected";
+    cloudLabel.textContent = "OneDrive";
+    cloudPill.title = "点击登录 OneDrive";
+  }
+}
+
+cloudPill.addEventListener("click", async () => {
+  if (!cloud.isAuthConfigured()) {
+    showActionToast("未配置 OneDrive — 先在 src/config.js 填 CLIENT_ID", 5000);
+    return;
+  }
+  if (cloud.isSignedIn()) {
+    if (!confirm("注销 OneDrive？本地数据保留。")) return;
+    await cloud.signOut();
+    refreshCloudUI();
+    showActionToast("已注销 OneDrive");
+  } else {
+    cloudPill.dataset.state = "connecting";
+    cloudLabel.textContent = "OneDrive · 登录中";
+    try { await cloud.signIn(); /* 跳转登录 */ }
+    catch (e) {
+      refreshCloudUI();
+      showActionToast(`登录失败：${e.message}`, 4000);
+    }
+  }
+});
+
+cloudPushBtn.addEventListener("click", async () => {
+  if (!cloud.isSignedIn()) return;
+  cloudPushBtn.disabled = true;
+  showActionToast("推到 OneDrive…", 60000);
+  try {
+    // 先确保 IDB 与即将推送的 zip 一致
+    await saveCurrentSession();
+    const { atlas } = await buildAtlasZip();
+    const name = sessionInput.value || "atlas";
+    const result = await cloud.pushAtlas(name, atlas, {
+      onConflict: (sib) => showActionToast(`云端有新版，你的本地已另存为 ${sib}`, 8000),
+    });
+    if (result.action === "uploaded") {
+      showActionToast(`已推到 OneDrive：${name}.atlas.zip`);
+    } else if (result.action === "sibling-copy") {
+      // 远端冲突 → 用户的本地保留在 sibling，但*主*文件仍是远端版本，需要 pull
+      if (confirm(`OneDrive 上 ${name}.atlas.zip 比本地新。\n你的本地已另存为 ${result.siblingName}。\n现在拉远端版本到本地？`)) {
+        await pullFromCloud();
+      }
+    }
+  } catch (e) {
+    showActionToast(`推送失败：${e.message || e}`, 5000);
+  } finally {
+    cloudPushBtn.disabled = !cloud.isSignedIn();
+  }
+});
+
+async function pullFromCloud() {
+  if (!cloud.isSignedIn()) return;
+  cloudPullBtn.disabled = true;
+  showActionToast("从 OneDrive 拉…", 60000);
+  try {
+    const name = sessionInput.value || "atlas";
+    const result = await cloud.pullAtlas(name);
+    if (!result) {
+      showActionToast(`OneDrive 上没有 ${name}.atlas.zip`, 5000);
+      return;
+    }
+    _loading = true;
+    try { await applyAtlasZipBlob(result.blob); }
+    finally { _loading = false; }
+    await saveCurrentSession();
+    showActionToast(`已从 OneDrive 拉回：${result.item.name}`);
+  } catch (e) {
+    _loading = false;
+    showActionToast(`拉取失败：${e.message || e}`, 5000);
+  } finally {
+    cloudPullBtn.disabled = !cloud.isSignedIn();
+  }
+}
+
+cloudPullBtn.addEventListener("click", async () => {
+  if (!cloud.isSignedIn()) return;
+  if (_dirty) {
+    if (!confirm("本地有未保存修改，从 OneDrive 拉会覆盖。继续？")) return;
+  }
+  await pullFromCloud();
+});
+
+// 启动时尝试 MSAL init + 处理可能的 redirect 回调
+cloud.initAuth().then(() => refreshCloudUI()).catch((e) => {
+  console.warn("OneDrive 初始化失败:", e);
+  refreshCloudUI();
+});
+refreshCloudUI();
 
 // ----- BTP 连接状态 pill -----
 const btpPill = document.getElementById("btpPill");
