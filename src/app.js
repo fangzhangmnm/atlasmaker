@@ -18,6 +18,7 @@ import { BTPManager, BTPError } from "./btp.js";
 import * as storage from "./storage.js";
 import { zipPack, zipUnpack } from "./zip.js";
 import * as cloud from "./cloud.js";
+import { sessionFileName } from "./config.js";
 
 const SCENE_FORMAT_VERSION = 1;
 
@@ -249,18 +250,31 @@ async function buildAtlasZip() {
   return { atlas, thumb, doc };
 }
 
+// 当前 session 的 IDB key = "<sessionInput.value>.atlas.zip" / "characters/wall.atlas.zip" 之类。
+// localStorage 跟踪上次打开的 path，刷新时回到那里。
+const CURRENT_PATH_KEY = "atlasmaker.currentPath";
+const DEFAULT_SESSION_NAME = "未命名";
+function pathFromInput() { return sessionFileName(sessionInput.value || DEFAULT_SESSION_NAME); }
+function getCurrentPath() {
+  try { return localStorage.getItem(CURRENT_PATH_KEY) || sessionFileName(DEFAULT_SESSION_NAME); }
+  catch (_) { return sessionFileName(DEFAULT_SESSION_NAME); }
+}
+function setCurrentPath(p) { try { localStorage.setItem(CURRENT_PATH_KEY, p); } catch (_) {} }
+
 async function saveCurrentSession() {
   if (_saving) return;
   _saving = true;
   setSaveStatus("saving");
   try {
     const { atlas, thumb, doc } = await buildAtlasZip();
-    await storage.putSession("current", {
+    const path = pathFromInput();
+    await storage.putSession(path, {
       name: doc.name,
       updatedAt: doc.updatedAt,
       atlas,
       thumb,
     });
+    setCurrentPath(path);
     _dirty = false;
     setSaveStatus("saved");
     // 本地 IDB 写完 → 云端关系到此变 dirty（如果登录中）
@@ -314,7 +328,18 @@ async function applyAtlasZipBlob(atlasBlob) {
 }
 
 async function loadCurrentSession() {
-  const pkg = await storage.getSession("current");
+  // 先迁移老 "current" 键（如果存在）—— 一次性
+  try {
+    const legacy = await storage.getSession("current");
+    if (legacy && legacy.atlas) {
+      const targetPath = sessionFileName(legacy.name || DEFAULT_SESSION_NAME);
+      await storage.putSession(targetPath, legacy);
+      await storage.deleteSession("current");
+      setCurrentPath(targetPath);
+    }
+  } catch (_) {}
+  const path = getCurrentPath();
+  const pkg = await storage.getSession(path);
   if (!pkg || !pkg.atlas) return false;
   _loading = true;
   try {
@@ -325,6 +350,44 @@ async function loadCurrentSession() {
   } finally {
     _loading = false;
   }
+}
+
+// 切到指定 path 的 session（保存当前 → 加载新）
+async function openSessionByPath(path) {
+  if (_dirty && !_saving) await saveCurrentSession();
+  const pkg = await storage.getSession(path);
+  if (!pkg) { showActionToast(`找不到：${path}`, 4000); return; }
+  _loading = true;
+  try {
+    await applyAtlasZipBlob(pkg.atlas);
+    const stem = path.replace(/\.atlas\.zip$/i, "");
+    sessionInput.value = stem;
+    applySessionTitle();
+  } finally { _loading = false; }
+  setCurrentPath(path);
+  _dirty = false;
+  setSaveStatus("saved");
+  refreshCloudUI();
+}
+
+// 新建空白 session 并切过去
+async function newBlankSession(path) {
+  if (_dirty && !_saving) await saveCurrentSession();
+  _loading = true;
+  try {
+    scene.restore({ objects: new Map(), imageOrder: [], viewportOrder: [], selection: new Set() });
+    scene._undoStack.length = 0;
+    scene._redoStack.length = 0;
+    const r = boardEl.getBoundingClientRect();
+    board.setViewport(r.width / 2, r.height / 2, 1);
+    const stem = path.replace(/\.atlas\.zip$/i, "");
+    sessionInput.value = stem;
+    applySessionTitle();
+  } finally { _loading = false; }
+  setCurrentPath(path);
+  _dirty = true; // 立刻写一次让它出现在列表里
+  await saveCurrentSession();
+  refreshCloudUI();
 }
 
 async function exportCurrentSceneAsZip() {
@@ -1099,8 +1162,9 @@ btp.onChange(() => {
   }
 });
 btpPill.addEventListener("click", () => btp.probe());
-// 启动时探活一次（不要 await，让 UI 先出来）
-btp.probe();
+// 不在启动时自动 probe —— 那会触发浏览器的 PNA 提示（"访问设备上其他应用"），
+// 还没让用户决定要不要连 Blender 就弹出，体验差。
+// 改为 lazy：用户点 Blender pill / 推到 Blender 按钮时才发起连接。
 
 // ----- 版本号 -----
 const versionLabel = document.getElementById("versionLabel");
@@ -1161,3 +1225,111 @@ setSaveStatus("saved");
 
 // 启动时尝试从 IDB 恢复上次 session
 loadCurrentSession().catch((e) => console.warn("初始加载失败", e));
+
+// ----- 会话浏览模态 -----
+const sessionsBackdrop = document.getElementById("sessionsBackdrop");
+const sessionsModal = document.getElementById("sessionsModal");
+const sessionsList = document.getElementById("sessionsList");
+
+async function refreshSessionsList() {
+  sessionsList.innerHTML = "";
+  let keys = [];
+  try { keys = await storage.listSessionIds(); } catch (e) { console.warn("list sessions failed", e); }
+  keys = keys.filter((k) => typeof k === "string" && k.endsWith(".atlas.zip"));
+  keys.sort((a, b) => a.localeCompare(b));
+  const cur = getCurrentPath();
+  for (const key of keys) {
+    let pkg = null;
+    try { pkg = await storage.getSession(key); } catch (_) {}
+    if (!pkg) continue;
+    const row = document.createElement("div");
+    row.className = "session-row";
+    if (key === cur) row.dataset.current = "true";
+
+    const thumb = document.createElement("div");
+    thumb.className = "thumb";
+    if (pkg.thumb) {
+      const url = URL.createObjectURL(pkg.thumb);
+      thumb.style.backgroundImage = `url(${url})`;
+      // 不 revoke：模态关闭后整个 list 被 innerHTML 清掉，浏览器自然回收
+    }
+    row.appendChild(thumb);
+
+    const body = document.createElement("div");
+    body.className = "body";
+    const pathEl = document.createElement("div");
+    pathEl.className = "path";
+    pathEl.textContent = key.replace(/\.atlas\.zip$/i, "");
+    body.appendChild(pathEl);
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const t = pkg.updatedAt ? new Date(pkg.updatedAt).toLocaleString() : "—";
+    const sizeStr = pkg.atlas ? formatBytes(pkg.atlas.size) : "—";
+    meta.textContent = key === cur ? `当前 · ${t} · ${sizeStr}` : `${t} · ${sizeStr}`;
+    body.appendChild(meta);
+    row.appendChild(body);
+
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    if (key !== cur) {
+      const openBtn = document.createElement("button");
+      openBtn.textContent = "打开";
+      openBtn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        await openSessionByPath(key);
+        closeSessionsModal();
+      });
+      actions.appendChild(openBtn);
+    }
+    const delBtn = document.createElement("button");
+    delBtn.className = "danger";
+    delBtn.textContent = "删除";
+    delBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (!confirm(`删除 ${key}？无法撤销。`)) return;
+      try { await storage.deleteSession(key); } catch (err) { showActionToast(`删除失败：${err.message || err}`); return; }
+      if (key === getCurrentPath()) {
+        await newBlankSession(sessionFileName(DEFAULT_SESSION_NAME));
+      }
+      await refreshSessionsList();
+    });
+    actions.appendChild(delBtn);
+    row.appendChild(actions);
+
+    row.addEventListener("dblclick", async () => {
+      if (key !== getCurrentPath()) { await openSessionByPath(key); closeSessionsModal(); }
+    });
+    sessionsList.appendChild(row);
+  }
+}
+
+async function openSessionsModal() {
+  // 打开前 flush 一下，让当前 session 出现在列表里且 thumb 最新
+  if (_dirty && !_saving) await saveCurrentSession();
+  await refreshSessionsList();
+  sessionsModal.classList.remove("hidden");
+  sessionsBackdrop.classList.remove("hidden");
+}
+function closeSessionsModal() {
+  sessionsModal.classList.add("hidden");
+  sessionsBackdrop.classList.add("hidden");
+}
+
+document.getElementById("sessionsButton").addEventListener("click", () => openSessionsModal());
+document.getElementById("sessionsCloseBtn").addEventListener("click", closeSessionsModal);
+document.getElementById("sessionsRefreshBtn").addEventListener("click", refreshSessionsList);
+sessionsBackdrop.addEventListener("click", closeSessionsModal);
+document.getElementById("sessionsNewBtn").addEventListener("click", async () => {
+  const name = prompt("新会话路径（可带 / 组织到子文件夹，如 characters/wall）", "未命名");
+  if (!name) return;
+  const path = sessionFileName(name);
+  const existing = await storage.getSession(path);
+  if (existing) {
+    if (!confirm(`${path} 已存在。覆盖（先打开它再清空）？`)) return;
+    await openSessionByPath(path);
+    closeSessionsModal();
+    return;
+  }
+  await newBlankSession(path);
+  await refreshSessionsList();
+});

@@ -89,6 +89,12 @@
 
       <div class="spacer"></div>
 
+      <button class="tool" id="sessionsButton" type="button" title="会话浏览（多 session + 子文件夹）">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"></path>
+        </svg>
+      </button>
+
       <button class="tool" id="importButton" type="button" title="导入 atlas zip">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
@@ -232,6 +238,22 @@
     <!-- 短 toast：操作结果反馈 -->
     <div id="actionToast" class="toast hidden" role="status" aria-live="polite">
       <span id="actionToastText"></span>
+    </div>
+
+    <!-- 会话浏览模态 -->
+    <div id="sessionsBackdrop" class="backdrop hidden" aria-hidden="true"></div>
+    <div id="sessionsModal" class="sessions-modal hidden" role="dialog" aria-label="会话列表">
+      <div class="sessions-head">
+        <span class="sessions-title">会话</span>
+        <button id="sessionsNewBtn" class="sheet-action" type="button">新建</button>
+        <button id="sessionsRefreshBtn" class="sheet-action ghost" type="button" title="重新加载列表">↻</button>
+        <div class="spacer"></div>
+        <button id="sessionsCloseBtn" class="close-x" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="sessions-hint">
+        路径里加 <code>/</code> 自动归到子文件夹（如 <code>characters/wall</code>）。
+      </div>
+      <div id="sessionsList" class="sessions-list"></div>
     </div>
 
     <!-- 更新 toast -->

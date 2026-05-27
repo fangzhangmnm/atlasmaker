@@ -12,10 +12,15 @@ export const AUTHORITY = "https://login.microsoftonline.com/common";
 // AppFolder = approot 沙盒；offline_access 给 silent refresh token
 export const SCOPES = ["Files.ReadWrite.AppFolder", "offline_access"];
 
-// Filename 工具：把 sessionName 转成 cloud 文件名
-//   sessionName: "未命名" → "未命名.atlas.zip"
-//   带非法字符的清洗一下
+// Filename 工具：把 sessionName 转成 cloud 文件名 / IDB key
+//   "未命名"          → "未命名.atlas.zip"
+//   "characters/wall" → "characters/wall.atlas.zip"  （/ 保留 = 子文件夹组织）
+// `/` 以外的非法字符 per-segment 清洗。
 export function sessionFileName(sessionName) {
-  const safe = (sessionName || "atlas").replace(/[\\/:*?"<>|]+/g, "_").trim() || "atlas";
-  return `${safe}.atlas.zip`;
+  const segments = (sessionName || "atlas")
+    .split("/")
+    .map((s) => s.replace(/[\\:*?"<>|]+/g, "_").trim())
+    .filter(Boolean);
+  if (!segments.length) segments.push("atlas");
+  return `${segments.join("/")}.atlas.zip`;
 }
