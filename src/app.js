@@ -91,23 +91,27 @@ importInput.addEventListener("change", () => {
   }
 });
 
-// ----- session 名 + 持久化 -----
+// ----- session 名 + 持久化（v11：atomic single-zip）-----
+//
+// 设计：一个 session = 一个 atlas zip，整包 atomic 写进 IDB（不再拆 scene/blobs）。
+// 保存策略：用户主导（Ctrl+S）+ 3-min 兜底 + 关页面 visibility/pagehide 兜底。
+// 不走 debounce/heartbeat/trivial-skip 那套（参 webxiaoheiwu sync-design）——
+// AtlasMaker 用 Blender 习惯，频繁自动保存反而带来不稳定。
 const sessionInput = document.getElementById("sessionName");
 const saveStatusEl = document.getElementById("saveStatus");
+const AUTO_SAVE_FALLBACK_MS = 3 * 60 * 1000;
+
+let _dirty = false;
+let _saving = false;
+let _loading = false;
 
 function applySessionTitle() {
   const name = sessionInput.value.trim() || "未命名";
   document.title = `${name} — AtlasMaker`;
 }
-sessionInput.addEventListener("input", () => { applySessionTitle(); scheduleSave(); });
-sessionInput.addEventListener("change", () => { applySessionTitle(); scheduleSave(); });
+sessionInput.addEventListener("input",  () => { applySessionTitle(); markDirty(); });
+sessionInput.addEventListener("change", () => { applySessionTitle(); markDirty(); });
 applySessionTitle();
-
-// 自动保存：scene / board / sessionName 变 → 防抖 800ms 写 IDB。
-// Ctrl+S 立即 flush。导入 / 启动恢复时 _loading 防止把刚读进来的状态原样写回去。
-let _saveTimer = null;
-let _loading = false;
-const SAVE_DEBOUNCE = 800;
 
 function setSaveStatus(state) {
   if (!saveStatusEl) return;
@@ -120,16 +124,12 @@ function setSaveStatus(state) {
   })[state] || "";
 }
 
-function scheduleSave() {
+function markDirty() {
   if (_loading) return;
-  setSaveStatus("dirty");
-  if (_saveTimer) clearTimeout(_saveTimer);
-  _saveTimer = setTimeout(() => { _saveTimer = null; saveCurrentScene(); }, SAVE_DEBOUNCE);
-}
-
-function flushSave() {
-  if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
-  return saveCurrentScene();
+  if (!_dirty) {
+    _dirty = true;
+    setSaveStatus("dirty");
+  }
 }
 
 // 把当前 scene 序列化成 scene.json 文档（无 Blob，只引用 src）
@@ -140,7 +140,6 @@ function makeSceneDoc(snap) {
   });
   return {
     format_version: SCENE_FORMAT_VERSION,
-    id: "current",
     name: sessionInput.value,
     updatedAt: Date.now(),
     board: { ...board.viewport },
@@ -150,52 +149,162 @@ function makeSceneDoc(snap) {
   };
 }
 
-async function saveCurrentScene() {
-  setSaveStatus("saving");
+// 把当前 board 可见区域光栅化成缩略图（thumb.png 进 zip）。
+// 「web 视口」语义：你最后保存时看到的就是 thumb。
+async function renderBoardThumb(maxSize = 512) {
   try {
-    const snap = scene.snapshot();
-    // 先把所有 image 的 blob 落到 IDB blobs store —— put 是覆盖语义，重复写不会出错
-    for (const o of snap.objects.values()) {
-      if (o.type === "image" && o.src && o.blob) {
-        try { await storage.putBlob(o.src, o.blob); } catch (e) { console.warn("putBlob failed", o.src, e); }
+    const r = boardEl.getBoundingClientRect();
+    if (r.width < 4 || r.height < 4) return null;
+    const aspect = r.width / r.height;
+    const tw = aspect >= 1 ? maxSize : Math.round(maxSize * aspect);
+    const th = aspect >= 1 ? Math.round(maxSize / aspect) : maxSize;
+    const canvas = document.createElement("canvas");
+    canvas.width = tw;
+    canvas.height = th;
+    const ctx = canvas.getContext("2d");
+    const bg = getComputedStyle(boardEl).backgroundColor || "#e6e2d6";
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, tw, th);
+    const sxThumb = tw / r.width;
+    const syThumb = th / r.height;
+    const wToThumb = (wx, wy) => {
+      const s = board.worldToScreen(wx, wy);
+      return { x: (s.x - r.left) * sxThumb, y: (s.y - r.top) * syThumb };
+    };
+    // images（按 z-order 顺序）
+    for (const obj of scene.listImages()) {
+      const tl = wToThumb(obj.x, obj.y);
+      const br = wToThumb(obj.x + obj.w, obj.y + obj.h);
+      const w_ = br.x - tl.x, h_ = br.y - tl.y;
+      if (w_ < 0.5 || h_ < 0.5) continue;
+      const node = scene.getNode(obj.id);
+      const imgEl = node && node.querySelector("img");
+      if (!imgEl || !imgEl.complete || !imgEl.naturalWidth) continue;
+      ctx.imageSmoothingEnabled = obj.interp !== "nearest";
+      if (obj.rotation) {
+        const cx = (tl.x + br.x) / 2, cy = (tl.y + br.y) / 2;
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(obj.rotation * Math.PI / 180);
+        try { ctx.drawImage(imgEl, -w_ / 2, -h_ / 2, w_, h_); } catch (_) {}
+        ctx.restore();
+      } else {
+        try { ctx.drawImage(imgEl, tl.x, tl.y, w_, h_); } catch (_) {}
       }
     }
-    const doc = makeSceneDoc(snap);
-    await storage.putScene("current", doc);
+    // viewports（dashed frame + 淡 accent 底）
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    for (const obj of scene.listViewports()) {
+      const tl = wToThumb(obj.x, obj.y);
+      const br = wToThumb(obj.x + obj.w, obj.y + obj.h);
+      const w_ = br.x - tl.x, h_ = br.y - tl.y;
+      if (w_ < 1 || h_ < 1) continue;
+      ctx.save();
+      ctx.fillStyle = "rgba(138, 72, 30, 0.18)";
+      ctx.strokeStyle = "#8a481e";
+      if (obj.rotation) {
+        const cx = (tl.x + br.x) / 2, cy = (tl.y + br.y) / 2;
+        ctx.translate(cx, cy);
+        ctx.rotate(obj.rotation * Math.PI / 180);
+        ctx.fillRect(-w_ / 2, -h_ / 2, w_, h_);
+        ctx.strokeRect(-w_ / 2, -h_ / 2, w_, h_);
+      } else {
+        ctx.fillRect(tl.x, tl.y, w_, h_);
+        ctx.strokeRect(tl.x, tl.y, w_, h_);
+      }
+      ctx.restore();
+    }
+    return await new Promise((res) => canvas.toBlob(res, "image/png"));
+  } catch (e) {
+    console.warn("thumb render failed", e);
+    return null;
+  }
+}
+
+// 把当前 scene 打成 atlas zip：scene.json + images/<uuid>.<ext> + thumb.png
+async function buildAtlasZip() {
+  const snap = scene.snapshot();
+  const doc = makeSceneDoc(snap);
+  const entries = [{ path: "scene.json", data: JSON.stringify(doc, null, 2) }];
+  for (const o of snap.objects.values()) {
+    if (o.type === "image" && o.src && o.blob) {
+      entries.push({ path: o.src, data: o.blob });
+    }
+  }
+  let thumb = null;
+  try { thumb = await renderBoardThumb(512); } catch (_) {}
+  if (thumb) entries.push({ path: "thumb.png", data: thumb });
+  const atlas = await zipPack(entries);
+  return { atlas, thumb, doc };
+}
+
+async function saveCurrentSession() {
+  if (_saving) return;
+  _saving = true;
+  setSaveStatus("saving");
+  try {
+    const { atlas, thumb, doc } = await buildAtlasZip();
+    await storage.putSession("current", {
+      name: doc.name,
+      updatedAt: doc.updatedAt,
+      atlas,
+      thumb,
+    });
+    _dirty = false;
     setSaveStatus("saved");
   } catch (e) {
     console.warn("save failed", e);
     setSaveStatus("error");
+  } finally {
+    _saving = false;
   }
 }
 
-async function loadCurrentScene() {
-  const doc = await storage.getScene("current");
-  if (!doc || !Array.isArray(doc.objects)) return false;
+// 从 zip 解出来的 atlas 恢复到 scene。被 IDB 启动加载和 import 共用。
+async function applyAtlasZipBlob(atlasBlob) {
+  const entries = await zipUnpack(atlasBlob);
+  const sceneBytes = entries["scene.json"];
+  if (!sceneBytes) throw new Error("ZIP 里没有 scene.json");
+  const doc = JSON.parse(new TextDecoder().decode(sceneBytes));
+  if (doc.format_version !== SCENE_FORMAT_VERSION) {
+    console.warn("scene.json format_version", doc.format_version, "vs current", SCENE_FORMAT_VERSION);
+  }
+  const objects = (doc.objects || []).map((o) => {
+    const obj = { ...o };
+    if (obj.type === "image" && obj.src) {
+      const bytes = entries[obj.src];
+      if (bytes) {
+        const ext = (obj.src.split(".").pop() || "png").toLowerCase();
+        const mime = (ext === "jpg" || ext === "jpeg") ? "image/jpeg" : "image/png";
+        obj.blob = new Blob([bytes], { type: mime });
+      }
+      obj._displayUrl = null;
+    }
+    return obj;
+  });
+  const objMap = new Map();
+  for (const o of objects) objMap.set(o.id, o);
+  scene.restore({
+    objects: objMap,
+    imageOrder: doc.imageOrder || [],
+    viewportOrder: doc.viewportOrder || [],
+    selection: new Set(),
+  });
+  scene._undoStack.length = 0;
+  scene._redoStack.length = 0;
+  if (doc.board) board.setViewport(doc.board.tx, doc.board.ty, doc.board.scale);
+  if (typeof doc.name === "string") { sessionInput.value = doc.name; applySessionTitle(); }
+  return doc;
+}
+
+async function loadCurrentSession() {
+  const pkg = await storage.getSession("current");
+  if (!pkg || !pkg.atlas) return false;
   _loading = true;
   try {
-    const paths = doc.objects.filter((o) => o.type === "image" && o.src).map((o) => o.src);
-    const blobMap = paths.length ? await storage.getBlobsBatch(paths) : {};
-    const objMap = new Map();
-    for (const o of doc.objects) {
-      const obj = { ...o };
-      if (obj.type === "image") {
-        obj.blob = obj.src ? blobMap[obj.src] : null;
-        obj._displayUrl = null;
-      }
-      objMap.set(obj.id, obj);
-    }
-    scene.restore({
-      objects: objMap,
-      imageOrder: doc.imageOrder || [],
-      viewportOrder: doc.viewportOrder || [],
-      selection: new Set(),
-    });
-    // restore 是「新基线」，不让 undo 跨越它
-    scene._undoStack.length = 0;
-    scene._redoStack.length = 0;
-    if (doc.board) board.setViewport(doc.board.tx, doc.board.ty, doc.board.scale);
-    if (typeof doc.name === "string") { sessionInput.value = doc.name; applySessionTitle(); }
+    await applyAtlasZipBlob(pkg.atlas);
+    _dirty = false;
     setSaveStatus("saved");
     return true;
   } finally {
@@ -203,60 +312,51 @@ async function loadCurrentScene() {
   }
 }
 
-// 把 scene → ZIP blob（scene.json + images/*）
-async function packCurrentSceneZip() {
-  const snap = scene.snapshot();
-  const doc = makeSceneDoc(snap);
-  const entries = [
-    { path: "scene.json", data: JSON.stringify(doc, null, 2) },
-  ];
-  for (const o of snap.objects.values()) {
-    if (o.type === "image" && o.src && o.blob) {
-      entries.push({ path: o.src, data: o.blob });
-    }
-  }
-  return { blob: await zipPack(entries), doc, imageCount: entries.length - 1 };
-}
-
 async function exportCurrentSceneAsZip() {
   try {
-    const { blob, imageCount } = await packCurrentSceneZip();
+    const { atlas, doc } = await buildAtlasZip();
     const safeName = (sessionInput.value || "atlas").replace(/[\\/:*?"<>|]+/g, "_").trim() || "atlas";
-    downloadBlob(blob, `${safeName}.atlas.zip`);
-    showActionToast(`已导出（${imageCount} 张图）`);
+    downloadBlob(atlas, `${safeName}.atlas.zip`);
+    const n = (doc.objects || []).filter((o) => o.type === "image").length;
+    showActionToast(`已导出（${n} 张图）`);
   } catch (e) {
     showActionToast(`导出失败：${e.message || e}`, 4000);
   }
 }
 
 async function importSceneFromZipFile(file) {
+  _loading = true;
   try {
-    const entries = await zipUnpack(file);
-    const sceneBytes = entries["scene.json"];
-    if (!sceneBytes) throw new Error("ZIP 里没有 scene.json");
-    const doc = JSON.parse(new TextDecoder().decode(sceneBytes));
-    if (doc.format_version !== SCENE_FORMAT_VERSION) {
-      console.warn("scene.json format_version", doc.format_version, "vs current", SCENE_FORMAT_VERSION);
-    }
-    const blobEntries = [];
-    for (const [path, bytes] of Object.entries(entries)) {
-      if (path === "scene.json") continue;
-      const ext = path.split(".").pop().toLowerCase();
-      const mime = (ext === "jpg" || ext === "jpeg") ? "image/jpeg" : "image/png";
-      blobEntries.push([path, new Blob([bytes], { type: mime })]);
-    }
-    await storage.putBlobsBatch(blobEntries);
-    await storage.putScene("current", { ...doc, id: "current", updatedAt: Date.now() });
-    await loadCurrentScene();
-    showActionToast(`已导入：${doc.name || "未命名"}（${blobEntries.length} 张图）`);
+    const doc = await applyAtlasZipBlob(file);
+    _loading = false;
+    // 立刻 atomic 写一次 IDB（让导入立刻持久化，避免 refresh 又丢）
+    await saveCurrentSession();
+    const n = (doc.objects || []).filter((o) => o.type === "image").length;
+    showActionToast(`已导入：${doc.name || "未命名"}（${n} 张图）`);
   } catch (e) {
+    _loading = false;
     showActionToast(`导入失败：${e.message || e}`, 5000);
   }
 }
 
-// 钩子：scene / board 变 → 自动保存
-board.onChange(() => scheduleSave());
-scene.onChange(() => scheduleSave());
+// ----- 钩子：变 → 标 dirty。不立即写。 -----
+board.onChange(() => markDirty());
+scene.onChange(() => markDirty());
+
+// 3-min 兜底（dirty 才写）—— 用户主要 Ctrl+S，这层是安全网
+setInterval(() => {
+  if (_dirty && !_saving && !_loading) saveCurrentSession().catch(() => {});
+}, AUTO_SAVE_FALLBACK_MS);
+
+// 关页面前抢救（visibilitychange / pagehide）
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden" && _dirty && !_saving) {
+    saveCurrentSession().catch(() => {});
+  }
+});
+window.addEventListener("pagehide", () => {
+  if (_dirty && !_saving) saveCurrentSession().catch(() => {});
+});
 
 // ----- 主题 -----
 const THEMES = ["auto", "day", "night"];
@@ -506,7 +606,7 @@ const input = new Input({
       scene.add(obj);
       scene.select(obj.id, false);
     });
-    // scheduleSave 由 scene.onChange 自动触发；不在这里再调一次
+    // markDirty 由 scene.onChange 自动触发；不在这里再调一次
   },
   onViewportFinish: ({ x, y, w, h }) => {
     scene.act(() => {
@@ -517,7 +617,7 @@ const input = new Input({
   },
   hooks: {
     onFit: doFit,
-    onSave: () => flushSave(),
+    onSave: () => saveCurrentSession(),
     onDelete: () => {
       if (!scene.selection.size) return;
       scene.act(() => {
@@ -912,4 +1012,4 @@ renderOverlay();
 setSaveStatus("saved");
 
 // 启动时尝试从 IDB 恢复上次 session
-loadCurrentScene().catch((e) => console.warn("初始加载失败", e));
+loadCurrentSession().catch((e) => console.warn("初始加载失败", e));

@@ -3,7 +3,104 @@
 > 谁先看到这个文档：下一位接手的 AI / 我自己回来续命。
 > 这只是「一期决策」，不要当圣经 —— proposal 会更新，遇到大决策先回去重读 [../journal/20260524 proposal.md](../../journal/20260524 proposal.md)。
 
-## 持久化（v9 起）
+## 持久化（v11 起 —— atomic single-zip）
+
+> v9-v10 拆 scene.json + 多个 blob 两个 IDB store 多 tx 写。Refresh 在中间截断 → 半边状态（"有时丢图、有时丢 viewport"）。**v11 改成「一个 session = 一个 atlas zip = 一次 IDB put」**，原子写。
+
+### IDB schema (v2)
+
+```
+DB: atlasmaker
+  store: sessions
+    key: <session id>      (一期单 session："current")
+    value: {
+      name: string,
+      updatedAt: number,
+      atlas: Blob,         // 完整 zip = scene.json + images/* + thumb.png
+      thumb: Blob,         // 副本，便于多 session UI 列表快速预览
+    }
+  // 旧 stores (scenes / blobs) 不删，DevTools 可查可清，新代码不再读写
+```
+
+### 保存策略：用户主导，不要 debounce 复杂度
+
+抄 [WebXiaoHeiWu sync-design](../../20260516 WebXiaoHeiWu/docs/sync-design.md) 的智慧但反向应用 ——
+**AtlasMaker 用户是 Blender 习惯**，自动保存只是兜底；频繁自动保存反而带来不稳定。
+
+- `Ctrl+S` 立刻 `saveCurrentSession()`（一次原子 put）
+- 3 分钟 `setInterval`：dirty 才写
+- `visibilitychange→hidden` / `pagehide`：dirty 抢救写一次
+- **不要** debounce / heartbeat / trivial-skip / single-flight 这些 webxiaoheiwu 高频文字编辑的复杂性
+
+### 文件格式
+
+```
+<sessionName>.atlas.zip
+├── scene.json
+├── images/<uuid>.<ext>
+└── thumb.png
+```
+
+`scene.json` schema：
+```ts
+{
+  format_version: 1,
+  name: string,
+  updatedAt: number,
+  board: { tx, ty, scale },
+  objects: [
+    { id, type: "image", src: "images/<uuid>.<ext>",
+      naturalW, naturalH, x, y, w, h, rotation, locked, interp },
+    { id, type: "viewport",
+      x, y, w, h, rotation, locked,
+      resW, resH, interp, binding },
+  ],
+  imageOrder: [id, ...],     // images 层 DOM 顺序 = z-order
+  viewportOrder: [id, ...],  // viewports 层
+}
+```
+
+`thumb.png`：当前 board 可见区域的小幅渲染（≤512px 长边）。每次保存重渲染。给未来的多 session 列表当卡片预览。
+
+### 数据流
+
+```
+[paste]
+  → 生成 src = "images/<uuid>.<ext>"（crypto.randomUUID）
+  → scene.add(obj with blob + src)
+  → scene.onChange → markDirty()      （UI 显示「未保存」）
+  → 不立即写 IDB
+
+[Ctrl+S / 3-min timer / visibilitychange-hidden / pagehide]
+  → 如果 _dirty 且没在保存中：
+  → snapshot() → makeSceneDoc()
+  → renderBoardThumb() → thumb.png Blob
+  → zipPack(scene.json + 所有 image blob + thumb.png) → atlas Blob
+  → storage.putSession("current", { name, updatedAt, atlas, thumb })   ← ONE atomic IDB tx
+  → _dirty = false
+
+[boot / refresh]
+  → loadCurrentSession() → getSession("current") → pkg
+  → zipUnpack(pkg.atlas) → { "scene.json": bytes, "images/x.png": bytes, "thumb.png": bytes }
+  → 解 scene.json，每个 image 用 zip 里的字节包成 Blob 挂回 obj.blob
+  → scene.restore(...)
+  → board.setViewport(doc.board)
+
+[导出]
+  → buildAtlasZip → 同上 → downloadBlob(<name>.atlas.zip)
+
+[导入]
+  → applyAtlasZipBlob(uploadedFile) → 复用 boot 路径
+  → saveCurrentSession()（把刚导入的 atomic 落盘）
+```
+
+### MSAL（OneDrive 下一轮）
+
+兄弟项目的演进：早期（webxiaoheiwu / justreadpapers）走 CDN（jsdelivr 主 + unpkg 兜底），新项目（RealHome / JustReadBooks）改 vendor。AtlasMaker 跟 vendor 路径。
+
+待办：[src/vendor/msal/](../src/vendor/msal/) 复制 `@azure/msal-browser` 单文件 bundle；lazy import 只在点「登录」时拉 ~660KB。
+
+## 旧版持久化（v9）记录
 
 **单一文件格式贯穿三个载体**（IDB / 本地 ZIP / 未来 OneDrive）：
 

@@ -1,18 +1,18 @@
-// IndexedDB 持久化。
+// IndexedDB 持久化 —— v11 起改成「一个 session = 一个 atomic 包」。
 //
-// 两个 store：
-//   "scenes" — keyed by scene id（一期只用 "current"），value = scene.json 文档（无 Blob，只引用 src）
-//   "blobs"  — keyed by 路径字符串 "images/<uuid>.<ext>"，value = Blob
+// 之前 v9-v10 拆 scenes / blobs 两个 store + 多 tx 写：refresh 在中间截断
+// → 半边状态 → 用户看到「有时候丢图、有时候丢 viewport」。
+// 现在：一个 store "sessions"，每条记录 = { name, updatedAt, atlas, thumb }，
+// 一次 put 一次 tx，要么全有要么全无。
 //
-// 这套结构和 ZIP 文件格式一一对应：导出时把 scenes/<id> 当 scene.json，blobs 按路径塞进 zip。
-// 导入反过来。
+// 代价：每次保存重序列化整个 atlas zip。所以保存频率必须低（Ctrl+S 为主，
+// 3-min 兜底，关页面 visibility/pagehide 兜底）—— 不要再走 debounce 路径。
 //
-// 一期没做 GC：删除 obj 不会回收对应 blob。session 内可接受；将来加引用计数 / 周期 GC。
+// 旧 stores（scenes/blobs）留着不动 —— DevTools 可看可清，新代码不再读写。
 
 const DB_NAME = "atlasmaker";
-const DB_VERSION = 1;
-const STORE_SCENES = "scenes";
-const STORE_BLOBS = "blobs";
+const DB_VERSION = 2;
+const STORE_SESSIONS = "sessions";
 
 let _dbPromise = null;
 
@@ -22,8 +22,8 @@ function openDB() {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = (ev) => {
       const db = ev.target.result;
-      if (!db.objectStoreNames.contains(STORE_SCENES)) db.createObjectStore(STORE_SCENES);
-      if (!db.objectStoreNames.contains(STORE_BLOBS)) db.createObjectStore(STORE_BLOBS);
+      if (!db.objectStoreNames.contains(STORE_SESSIONS)) db.createObjectStore(STORE_SESSIONS);
+      // 留着旧 stores（如有）—— 不删，让用户能用 DevTools 翻历史
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -31,72 +31,49 @@ function openDB() {
   return _dbPromise;
 }
 
-function _get(store, key) {
-  return openDB().then((db) => new Promise((resolve, reject) => {
-    const tx = db.transaction(store, "readonly");
-    const req = tx.objectStore(store).get(key);
+/**
+ * 取一个 session 包。返回 { name, updatedAt, atlas: Blob, thumb: Blob } 或 null。
+ */
+export async function getSession(id = "current") {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_SESSIONS, "readonly");
+    const req = tx.objectStore(STORE_SESSIONS).get(id);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+/**
+ * 原子写一个 session 包。pkg 整个作为一个 value 写入，IDB 保证 tx 内全有全无。
+ */
+export async function putSession(id, pkg) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_SESSIONS, "readwrite");
+    tx.objectStore(STORE_SESSIONS).put(pkg, id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function deleteSession(id) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_SESSIONS, "readwrite");
+    tx.objectStore(STORE_SESSIONS).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// 多 session UI 用得到（一期暂不暴露给 app）
+export async function listSessionIds() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_SESSIONS, "readonly");
+    const req = tx.objectStore(STORE_SESSIONS).getAllKeys();
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
-  }));
-}
-
-function _put(store, key, value) {
-  return openDB().then((db) => new Promise((resolve, reject) => {
-    const tx = db.transaction(store, "readwrite");
-    tx.objectStore(store).put(value, key);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  }));
-}
-
-function _del(store, key) {
-  return openDB().then((db) => new Promise((resolve, reject) => {
-    const tx = db.transaction(store, "readwrite");
-    tx.objectStore(store).delete(key);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  }));
-}
-
-function _keys(store) {
-  return openDB().then((db) => new Promise((resolve, reject) => {
-    const tx = db.transaction(store, "readonly");
-    const req = tx.objectStore(store).getAllKeys();
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  }));
-}
-
-export const getScene  = (id = "current") => _get(STORE_SCENES, id);
-export const putScene  = (id, doc)        => _put(STORE_SCENES, id, doc);
-export const delScene  = (id)             => _del(STORE_SCENES, id);
-export const getBlob   = (path)           => _get(STORE_BLOBS, path);
-export const putBlob   = (path, blob)     => _put(STORE_BLOBS, path, blob);
-export const delBlob   = (path)           => _del(STORE_BLOBS, path);
-export const listBlobs = ()               => _keys(STORE_BLOBS);
-
-// 包多个 blob 同事务写入 / 读取 —— 比逐个事务快很多（导入 ZIP 用得到）
-export function putBlobsBatch(entries) {
-  return openDB().then((db) => new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_BLOBS, "readwrite");
-    const store = tx.objectStore(STORE_BLOBS);
-    for (const [path, blob] of entries) store.put(blob, path);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  }));
-}
-
-export function getBlobsBatch(paths) {
-  return openDB().then((db) => new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_BLOBS, "readonly");
-    const store = tx.objectStore(STORE_BLOBS);
-    const out = {};
-    let pending = paths.length;
-    if (!pending) { resolve(out); return; }
-    for (const p of paths) {
-      const req = store.get(p);
-      req.onsuccess = () => { out[p] = req.result; if (--pending === 0) resolve(out); };
-      req.onerror = () => reject(req.error);
-    }
-  }));
+  });
 }
