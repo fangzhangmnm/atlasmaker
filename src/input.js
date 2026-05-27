@@ -292,6 +292,12 @@ export class Input {
       ev.preventDefault();
       return;
     }
+    // Ctrl+C 复制选中图片到系统剪贴板
+    if ((ev.ctrlKey || ev.metaKey) && (ev.key === "c" || ev.key === "C") && !ev.shiftKey) {
+      if (this.hooks.onCopy) this.hooks.onCopy();
+      ev.preventDefault();
+      return;
+    }
     // z-order：Ctrl+] / Ctrl+[ 单步；加 Shift 顶 / 底
     if ((ev.ctrlKey || ev.metaKey) && (ev.key === "]" || ev.key === "[")) {
       const top = ev.key === "]";

@@ -118,3 +118,20 @@ export async function listAtlases() {
   const items = await listChildren();
   return items.filter((it) => it.file && /\.atlas\.zip$/i.test(it.name));
 }
+
+// ----- 删除云端 session（重命名 / 显式清理用）-----
+// 404 视为 no-op（已经没有就当成功）。同时清干净 localStorage 里的 etag / dirty 标记。
+export async function deleteAtlas(sessionName) {
+  if (!isSignedIn()) throw new Error("尚未登录");
+  const path = sessionFileName(sessionName);
+  const item = await getItemByPath(path);
+  if (item) await deleteItem(item.id);
+  clearCloudState(sessionName);
+}
+
+export function clearCloudState(sessionName) {
+  try {
+    localStorage.removeItem(etagKey(sessionName));
+    localStorage.removeItem(cloudDirtyKey(sessionName));
+  } catch (_) {}
+}

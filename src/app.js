@@ -259,20 +259,35 @@ function getCurrentPath() {
 }
 function setCurrentPath(p) { try { localStorage.setItem(CURRENT_PATH_KEY, p); } catch (_) {} }
 
+// _activeIDBPath：当前 session 在 IDB 里实际保存的 key（区分于 pathFromInput() 这个 *目标* 路径）
+// 重命名场景：用户在 sessionInput 改名 → pathFromInput() 是新 path；_activeIDBPath 是老 path
+// 下一次 saveCurrentSession 时：新 path 写入，老 path 删除（IDB rename done）
+// _activeCloudPath：上次成功推送到 OneDrive 的路径。push 成功后若 _activeCloudPath !== 新 path → 删老云
+let _activeIDBPath = getCurrentPath();
+let _activeCloudPath = getCurrentPath(); // 启动时假设 = IDB path（404 时 deleteAtlas 会 no-op）
+
+function stemOfPath(path) { return path.replace(/\.atlas\.zip$/i, ""); }
+
 async function saveCurrentSession() {
   if (_saving) return;
   _saving = true;
   setSaveStatus("saving");
   try {
     const { atlas, thumb, doc } = await buildAtlasZip();
-    const path = pathFromInput();
-    await storage.putSession(path, {
+    const newPath = pathFromInput();
+    const oldPath = _activeIDBPath;
+    await storage.putSession(newPath, {
       name: doc.name,
       updatedAt: doc.updatedAt,
       atlas,
       thumb,
     });
-    setCurrentPath(path);
+    // 重命名 IDB：新写完了 → 删老 key（_activeIDBPath != newPath = 用户改过 input）
+    if (oldPath && oldPath !== newPath) {
+      try { await storage.deleteSession(oldPath); } catch (e) { console.warn("rename: 删老 key 失败", e); }
+    }
+    _activeIDBPath = newPath;
+    setCurrentPath(newPath);
     _dirty = false;
     setSaveStatus("saved");
     // 本地 IDB 写完 → 云端关系到此变 dirty（如果登录中）
@@ -358,11 +373,12 @@ async function openSessionByPath(path) {
   _loading = true;
   try {
     await applyAtlasZipBlob(pkg.atlas);
-    const stem = path.replace(/\.atlas\.zip$/i, "");
-    sessionInput.value = stem;
+    sessionInput.value = stemOfPath(path);
     applySessionTitle();
   } finally { _loading = false; }
   setCurrentPath(path);
+  _activeIDBPath = path;
+  _activeCloudPath = path; // 假设云上同名（不存在的话 deleteAtlas 是 no-op）
   _dirty = false;
   setSaveStatus("saved");
   refreshCloudUI();
@@ -378,10 +394,11 @@ async function newBlankSession(path) {
     scene._redoStack.length = 0;
     const r = boardEl.getBoundingClientRect();
     board.setViewport(r.width / 2, r.height / 2, 1);
-    const stem = path.replace(/\.atlas\.zip$/i, "");
-    sessionInput.value = stem;
+    sessionInput.value = stemOfPath(path);
     applySessionTitle();
   } finally { _loading = false; }
+  _activeIDBPath = path;
+  _activeCloudPath = null; // 全新的，云端没有
   setCurrentPath(path);
   _dirty = true; // 立刻写一次让它出现在列表里
   await saveCurrentSession();
@@ -744,6 +761,7 @@ const input = new Input({
   hooks: {
     onFit: doFit,
     onSave: () => saveCurrentSession(),
+    onCopy: () => copySelectedImageToClipboard(),
     onDelete: () => {
       if (!scene.selection.size) return;
       scene.act(() => {
@@ -1119,14 +1137,29 @@ cloudPushBtn.addEventListener("click", async () => {
     await saveCurrentSession();
     const { atlas } = await buildAtlasZip();
     const name = sessionInput.value || "atlas";
+    const newPath = pathFromInput();
+    const oldCloudPath = _activeCloudPath;
     const result = await cloud.pushAtlas(name, atlas, {
       onConflict: (sib) => showActionToast(`云端有新版，你的本地已另存为 ${sib}`, 8000),
     });
     if (result.action === "uploaded") {
-      showActionToast(`已推到 OneDrive：${name}.atlas.zip`);
+      // 重命名了 —— 清理旧云文件（404 自动 no-op）
+      let renamedFrom = null;
+      if (oldCloudPath && oldCloudPath !== newPath) {
+        try {
+          await cloud.deleteAtlas(stemOfPath(oldCloudPath));
+          renamedFrom = oldCloudPath;
+        } catch (e) {
+          console.warn("删旧云文件失败:", e);
+        }
+      }
+      _activeCloudPath = newPath;
+      showActionToast(renamedFrom
+        ? `已推到 OneDrive：${newPath}（删除了旧的 ${renamedFrom}）`
+        : `已推到 OneDrive：${newPath}`);
     } else if (result.action === "sibling-copy") {
       // 远端冲突 → 用户的本地保留在 sibling，但*主*文件仍是远端版本，需要 pull
-      if (confirm(`OneDrive 上 ${name}.atlas.zip 比本地新。\n你的本地已另存为 ${result.siblingName}。\n现在拉远端版本到本地？`)) {
+      if (confirm(`OneDrive 上 ${newPath} 比本地新。\n你的本地已另存为 ${result.siblingName}。\n现在拉远端版本到本地？`)) {
         await pullFromCloud();
       }
     }
@@ -1264,7 +1297,41 @@ renderOverlay();
 setSaveStatus("saved");
 
 // 启动时尝试从 IDB 恢复上次 session
-loadCurrentSession().catch((e) => console.warn("初始加载失败", e));
+loadCurrentSession().then(() => {
+  // 确保启动后 _activeIDBPath/_activeCloudPath 跟得上（loadCurrentSession 内部已 setCurrentPath，
+  // 我们这里把 active path 也指过去）
+  const path = getCurrentPath();
+  _activeIDBPath = path;
+  _activeCloudPath = path;
+}).catch((e) => console.warn("初始加载失败", e));
+
+// ----- Ctrl+C 复制选中图片到系统剪贴板（让 AtlasMaker 也能当图版用）-----
+async function blobToPng(blob) {
+  if (blob.type === "image/png") return blob;
+  const bitmap = await createImageBitmap(blob);
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  canvas.getContext("2d").drawImage(bitmap, 0, 0);
+  bitmap.close();
+  return await new Promise((res) => canvas.toBlob(res, "image/png"));
+}
+
+async function copySelectedImageToClipboard() {
+  const sel = scene.firstSelected();
+  if (!sel || sel.type !== "image") {
+    showActionToast("选中一张图片再 Ctrl+C 复制", 3000);
+    return;
+  }
+  if (!sel.blob) { showActionToast("图片数据缺失"); return; }
+  try {
+    const png = await blobToPng(sel.blob);
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+    showActionToast("已复制图片到剪贴板");
+  } catch (e) {
+    showActionToast(`复制失败：${e.message || e}`, 4000);
+  }
+}
 
 // ----- 会话浏览模态 -----
 const sessionsBackdrop = document.getElementById("sessionsBackdrop");
