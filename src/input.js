@@ -65,10 +65,10 @@ export class Input {
       document.body.dataset.panning = "1";
       return;
     }
-    // viewport 工具：拖框
+    // viewport 工具：拖框（aspect-locked，外观和 final viewport 一致）
     if (this.tool === "viewport") {
       const w = this.board.screenToWorld(ev.clientX, ev.clientY);
-      this._marqueeState = { x0: w.x, y0: w.y, node: null };
+      this._marqueeState = { x0: w.x, y0: w.y, node: null, label: null, lastDx: 0, lastDy: 0 };
       return;
     }
     // select 工具：用 ev.target 走 DOM —— viewport 的 pointer-events: none 自动让点穿透到图，
@@ -163,20 +163,44 @@ export class Input {
     if (this._marqueeState) {
       const w = this.board.screenToWorld(ev.clientX, ev.clientY);
       const { x0, y0 } = this._marqueeState;
-      const x = Math.min(x0, w.x), y = Math.min(y0, w.y);
-      const wW = Math.abs(w.x - x0), hH = Math.abs(w.y - y0);
+      // 锁 1:1（default viewport ratio）。锚点在 (x0, y0)；cursor 决定主导轴的方向 + 长度，副轴反推。
+      const ASPECT = 1;
+      let dx = w.x - x0;
+      let dy = w.y - y0;
+      const sgnX = dx >= 0 ? 1 : -1;
+      const sgnY = dy >= 0 ? 1 : -1;
+      if (Math.abs(dx) > Math.abs(dy) * ASPECT) {
+        dy = sgnY * Math.abs(dx) / ASPECT;
+      } else {
+        dx = sgnX * Math.abs(dy) * ASPECT;
+      }
+      this._marqueeState.lastDx = dx;
+      this._marqueeState.lastDy = dy;
+      const x = Math.min(x0, x0 + dx), y = Math.min(y0, y0 + dy);
+      const wW = Math.abs(dx), hH = Math.abs(dy);
       if (!this._marqueeState.node) {
+        // 跟最终 viewport DOM 结构一致：.obj.viewport + 4 条 .vp-edge + 一个 .vp-label
+        // 视觉上立刻就是 WYSIWYG，不再用「朴素矩形」误导
         const n = document.createElement("div");
-        n.className = "obj viewport";
-        n.style.opacity = "0.6";
+        n.className = "obj viewport vp-marquee";
+        for (const side of ["top", "right", "bottom", "left"]) {
+          const e = document.createElement("div");
+          e.className = `vp-edge ${side}`;
+          n.appendChild(e);
+        }
+        const label = document.createElement("span");
+        label.className = "vp-label";
+        n.appendChild(label);
         this.board.worldEl.appendChild(n);
         this._marqueeState.node = n;
+        this._marqueeState.label = label;
       }
       const n = this._marqueeState.node;
       n.style.left = `${x}px`;
       n.style.top = `${y}px`;
       n.style.width = `${wW}px`;
       n.style.height = `${hH}px`;
+      this._marqueeState.label.textContent = `${Math.round(wW)}×${Math.round(hH)}`;
       return;
     }
   };
@@ -215,16 +239,16 @@ export class Input {
       return;
     }
     if (this._marqueeState) {
-      const w = this.board.screenToWorld(ev.clientX, ev.clientY);
-      const { x0, y0, node } = this._marqueeState;
+      const { x0, y0, lastDx, lastDy, node } = this._marqueeState;
       this._marqueeState = null;
       if (node) node.remove();
-      const x = Math.min(x0, w.x), y = Math.min(y0, w.y);
-      const wW = Math.abs(w.x - x0), hH = Math.abs(w.y - y0);
+      // 用最后一次 pointermove 锁过 aspect 的 dx/dy（点击 = 0/0 → 走 fallback default）
+      const x = Math.min(x0, x0 + lastDx), y = Math.min(y0, y0 + lastDy);
+      const wW = Math.abs(lastDx), hH = Math.abs(lastDy);
       if (this.onViewportFinish) {
         if (wW < 16 || hH < 16) {
-          // 太小当点击处理 —— 给个默认尺寸放在那
-          this.onViewportFinish({ x: x + wW / 2, y: y + hH / 2, w: 512, h: 512 });
+          // 太小当点击处理 —— 给个默认尺寸放在 pointer 处
+          this.onViewportFinish({ x: x0, y: y0, w: 512, h: 512 });
         } else {
           this.onViewportFinish({ x: x + wW / 2, y: y + hH / 2, w: wW, h: hH });
         }
