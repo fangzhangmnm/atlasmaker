@@ -34,6 +34,22 @@ function setKnownETag(sessionName, eTag) {
   } catch (_) {}
 }
 
+// Cloud-dirty 标记：本地 IDB 自从上次成功推 / 拉云端之后又改过。
+// 单独存（per sessionName），让 UI 在 autosave "已保存" 之外仍能提示用户「云端还没同步」。
+// 默认 = dirty（保守：从未推过的 session 当 dirty 看待）。
+function cloudDirtyKey(sessionName) { return `atlasmaker.cloudDirty:${sessionName}`; }
+export function isCloudDirty(sessionName) {
+  if (!isSignedIn()) return false; // 没登录无意义
+  try {
+    const v = localStorage.getItem(cloudDirtyKey(sessionName));
+    if (v === null) return true; // 没记录 → 假定 dirty
+    return v === "1";
+  } catch (_) { return false; }
+}
+export function setCloudDirty(sessionName, dirty) {
+  try { localStorage.setItem(cloudDirtyKey(sessionName), dirty ? "1" : "0"); } catch (_) {}
+}
+
 export { isAuthConfigured, initAuth, signIn, signOut, getActiveAccount, isSignedIn };
 
 // ----- push 当前 session 到 OneDrive -----
@@ -50,6 +66,7 @@ export async function pushAtlas(sessionName, atlasBlob, { onConflict } = {}) {
       eTag: knownETag, // 第一次推送 knownETag 是 null → 服务器接受
     });
     setKnownETag(sessionName, item.eTag);
+    setCloudDirty(sessionName, false);
     return { action: "uploaded", item };
   } catch (e) {
     if (e.status !== 412) throw e;
@@ -92,6 +109,7 @@ export async function pullAtlas(sessionName) {
   if (!item) return null;
   const blob = await downloadItemBlob(item.id);
   setKnownETag(sessionName, item.eTag);
+  setCloudDirty(sessionName, false);
   return { blob, item };
 }
 

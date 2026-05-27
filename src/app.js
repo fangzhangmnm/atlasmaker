@@ -111,9 +111,17 @@ function applySessionTitle() {
   const name = sessionInput.value.trim() || "未命名";
   document.title = `${name} — AtlasMaker`;
 }
-sessionInput.addEventListener("input",  () => { applySessionTitle(); markDirty(); });
-sessionInput.addEventListener("change", () => { applySessionTitle(); markDirty(); });
+sessionInput.addEventListener("input",  () => { applySessionTitle(); markDirty(); onSessionNameChanged(); });
+sessionInput.addEventListener("change", () => { applySessionTitle(); markDirty(); onSessionNameChanged(); });
 applySessionTitle();
+
+function onSessionNameChanged() {
+  // 名一变 → 新名的云端要么从未见过、要么和本地内容不匹配，都按 dirty 看
+  if (cloud.isAuthConfigured() && cloud.isSignedIn()) {
+    cloud.setCloudDirty(sessionInput.value, true);
+  }
+  if (typeof refreshCloudUI === "function") refreshCloudUI();
+}
 
 function setSaveStatus(state) {
   if (!saveStatusEl) return;
@@ -255,6 +263,11 @@ async function saveCurrentSession() {
     });
     _dirty = false;
     setSaveStatus("saved");
+    // 本地 IDB 写完 → 云端关系到此变 dirty（如果登录中）
+    if (cloud.isAuthConfigured() && cloud.isSignedIn()) {
+      cloud.setCloudDirty(doc.name, true);
+      refreshCloudUI();
+    }
   } catch (e) {
     console.warn("save failed", e);
     setSaveStatus("error");
@@ -938,6 +951,11 @@ function refreshCloudUI() {
   const signedIn = cloud.isSignedIn();
   cloudPushBtn.disabled = !signedIn;
   cloudPullBtn.disabled = !signedIn;
+  // 云端待推：登录中 + 本地比云端新 → push 按钮闪小点（独立于本地保存状态）
+  const dirty = signedIn && cloud.isCloudDirty(sessionInput.value);
+  cloudPushBtn.classList.toggle("cloud-dirty", dirty);
+  if (dirty) cloudPushBtn.title = "推到 OneDrive（本地有未推送的修改）";
+  else cloudPushBtn.title = "推到 OneDrive（覆盖云端）";
   if (!cloud.isAuthConfigured()) {
     cloudPill.dataset.state = "disconnected";
     cloudLabel.textContent = "OneDrive 未配置";
@@ -998,6 +1016,7 @@ cloudPushBtn.addEventListener("click", async () => {
         await pullFromCloud();
       }
     }
+    refreshCloudUI();
   } catch (e) {
     showActionToast(`推送失败：${e.message || e}`, 5000);
   } finally {
@@ -1020,6 +1039,9 @@ async function pullFromCloud() {
     try { await applyAtlasZipBlob(result.blob); }
     finally { _loading = false; }
     await saveCurrentSession();
+    // pull 之后 local == cloud；saveCurrentSession 设了 dirty=true，这里 override 回 false
+    cloud.setCloudDirty(sessionInput.value, false);
+    refreshCloudUI();
     showActionToast(`已从 OneDrive 拉回：${result.item.name}`);
   } catch (e) {
     _loading = false;

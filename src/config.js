@@ -4,7 +4,7 @@
 //   - account types：personal + organization
 //   - 拿到 client id 填进下面这个常量
 // 占位时（仍是 REPLACE_ME...）App 走纯离线，不去碰 MSAL bundle —— 飞机模式 / 没注册时也能用。
-export const CLIENT_ID = "REPLACE_ME_WITH_AZURE_CLIENT_ID";
+export const CLIENT_ID = "cd8651a0-118f-4d90-bb06-d0c1ea1b668c";
 
 // common = 个人 + 组织账号都能登
 export const AUTHORITY = "https://login.microsoftonline.com/common";

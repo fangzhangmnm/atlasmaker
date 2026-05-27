@@ -268,6 +268,27 @@ body[data-tool="viewport"] .board { cursor: crosshair; }
   transition: background 0.1s ease;
 }
 .tool:hover { background: var(--bg-soft); }
+/* 云上传按钮的「云端待推」小点：本地新于云端时右上角亮 */
+.tool.cloud-dirty {
+  position: relative;
+}
+.tool.cloud-dirty::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 8px;
+  height: 8px;
+  background: var(--accent);
+  border-radius: 50%;
+  border: 1.5px solid var(--bg);
+  pointer-events: none;
+  animation: cloud-dirty-pulse 2s ease-in-out infinite;
+}
+@keyframes cloud-dirty-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
 .tool[aria-pressed="true"] {
   background: var(--accent-soft);
   border-color: var(--accent);
