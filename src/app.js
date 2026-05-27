@@ -107,8 +107,10 @@ let _saving = false;
 let _loading = false;
 
 function applySessionTitle() {
-  const name = sessionInput.value.trim() || "未命名";
-  document.title = `${name} — AtlasMaker`;
+  // 标题永远是固定的 "AtlasMaker"。理由：
+  // - 浏览器历史会按 title 给条目去重显示；放 session 名会产生「点了之后跳不到正确文件」的重复
+  // - session 名是潜在敏感信息（路径里可能有内容线索），不应漏进 history / 任务管理器 / 标签预览
+  document.title = "AtlasMaker";
 }
 sessionInput.addEventListener("input",  () => { applySessionTitle(); markDirty(); onSessionNameChanged(); });
 sessionInput.addEventListener("change", () => { applySessionTitle(); markDirty(); onSessionNameChanged(); });
@@ -342,14 +344,22 @@ async function applyAtlasZipBlob(atlasBlob, { passwordHint = null } = {}) {
   let entries;
   let usedPassword = null;
   if (fmt === "encrypted") {
+    // 重试循环：用户输错密码可以立刻再输；按取消才真的退出。
     let pw = passwordHint;
-    if (!pw) pw = await promptPassword("输入密码以解开加密会话");
-    if (pw === null) throw new Error("已取消（未输密码）");
-    try {
-      entries = await zipUnpackEncrypted(atlasBlob, pw);
-      usedPassword = pw;
-    } catch (e) {
-      throw new Error(e.message || "密码错或文件损坏");
+    let firstTry = true;
+    while (true) {
+      if (!pw) {
+        pw = await promptPassword(firstTry ? "输入密码以解开加密会话" : "密码错，再试一次（取消放弃）");
+      }
+      if (pw === null) throw new Error("已取消（未输密码）");
+      try {
+        entries = await zipUnpackEncrypted(atlasBlob, pw);
+        usedPassword = pw;
+        break;
+      } catch (_) {
+        pw = null;
+        firstTry = false;
+      }
     }
   } else {
     entries = await zipUnpack(atlasBlob);
