@@ -1572,19 +1572,7 @@ function renderSessionFileRow(key, { pkg, inLocal, inCloud, isCurrent }) {
   // Actions
   const actions = document.createElement("div");
   actions.className = "actions";
-  const openBtn = document.createElement("button");
-  openBtn.textContent = isCurrent ? "重新打开" : (inLocal ? "打开" : "拉并打开");
-  openBtn.addEventListener("click", async (e) => {
-    e.stopPropagation();
-    try {
-      if (!inLocal && inCloud) await pullSessionFromCloudAndOpen(key);
-      else await openSessionByPath(key);
-      closeSessionsModal();
-    } catch (err) {
-      showActionToast(`打开失败：${err.message || err}`, 4000);
-    }
-  });
-  actions.appendChild(openBtn);
+  // 不再放「打开」按钮 —— 整行单击就是打开
 
   if (inLocal) {
     const cryptBtn = document.createElement("button");
@@ -1621,16 +1609,20 @@ function renderSessionFileRow(key, { pkg, inLocal, inCloud, isCurrent }) {
   actions.appendChild(delBtn);
   row.appendChild(actions);
 
-  row.addEventListener("dblclick", async () => {
-    if (isCurrent) return;
-    try {
-      if (!inLocal && inCloud) await pullSessionFromCloudAndOpen(key);
-      else await openSessionByPath(key);
-      closeSessionsModal();
-    } catch (err) {
-      showActionToast(`打开失败：${err.message || err}`, 4000);
-    }
-  });
+  // 整行单击 = 打开（actions 里的按钮各自 stopPropagation）。current 行 no-op，避免误碰
+  // 触发 scene.restore 把 undo 栈炸了；用户想退出模态可以点 × / 背景。
+  if (!isCurrent) {
+    row.style.cursor = "pointer";
+    row.addEventListener("click", async () => {
+      try {
+        if (!inLocal && inCloud) await pullSessionFromCloudAndOpen(key);
+        else await openSessionByPath(key);
+        closeSessionsModal();
+      } catch (err) {
+        showActionToast(`打开失败：${err.message || err}`, 4000);
+      }
+    });
+  }
 
   return row;
 }
