@@ -262,13 +262,11 @@
       <div class="sessions-head">
         <span class="sessions-title">会话</span>
         <button id="sessionsNewBtn" class="sheet-action" type="button">新建</button>
-        <button id="sessionsRefreshBtn" class="sheet-action ghost" type="button" title="重新加载列表">↻</button>
+        <button id="sessionsRefreshBtn" class="sheet-action ghost" type="button" title="重新加载列表（含云端）">↻</button>
         <div class="spacer"></div>
         <button id="sessionsCloseBtn" class="close-x" type="button" aria-label="关闭">×</button>
       </div>
-      <div class="sessions-hint">
-        路径里加 <code>/</code> 自动归到子文件夹（如 <code>characters/wall</code>）。
-      </div>
+      <div id="sessionsBreadcrumb" class="sessions-breadcrumb"></div>
       <div id="sessionsList" class="sessions-list"></div>
     </div>
 

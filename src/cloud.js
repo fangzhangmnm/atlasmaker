@@ -119,6 +119,42 @@ export async function listAtlases() {
   return items.filter((it) => it.file && /\.atlas\.zip$/i.test(it.name));
 }
 
+// 递归列云端所有 atlas zip（含子文件夹）。返回 [{ path, name, size, eTag, ... }]，
+// path 是 approot 相对路径（如 "characters/wall.atlas.zip"）。
+export async function listAtlasesRecursive() {
+  if (!isSignedIn()) return [];
+  const out = [];
+  await _walkApproot("", out);
+  return out;
+}
+
+async function _walkApproot(subpath, out, depth = 0) {
+  if (depth > 8) return; // 安全帽
+  let items;
+  try { items = await listChildren(subpath); }
+  catch (e) { console.warn("listChildren failed at", subpath, e); return; }
+  for (const it of items) {
+    const itPath = subpath ? `${subpath}/${it.name}` : it.name;
+    if (it.folder) {
+      await _walkApproot(itPath, out, depth + 1);
+    } else if (it.file && /\.atlas\.zip$/i.test(it.name)) {
+      out.push({ ...it, path: itPath });
+    }
+  }
+}
+
+// 拉指定路径的 atlas（含子文件夹路径，例如 "characters/wall.atlas.zip"）
+export async function pullAtlasByPath(path) {
+  if (!isSignedIn()) throw new Error("尚未登录 OneDrive");
+  const item = await getItemByPath(path);
+  if (!item) return null;
+  const blob = await downloadItemBlob(item.id);
+  const stem = path.replace(/\.atlas\.zip$/i, "");
+  setKnownETag(stem, item.eTag);
+  setCloudDirty(stem, false);
+  return { blob, item };
+}
+
 // ----- 删除云端 session（重命名 / 显式清理用）-----
 // 404 视为 no-op（已经没有就当成功）。同时清干净 localStorage 里的 etag / dirty 标记。
 export async function deleteAtlas(sessionName) {

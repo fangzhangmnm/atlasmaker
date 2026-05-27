@@ -1406,66 +1406,187 @@ async function copySelectedImageToClipboard() {
 const sessionsBackdrop = document.getElementById("sessionsBackdrop");
 const sessionsModal = document.getElementById("sessionsModal");
 const sessionsList = document.getElementById("sessionsList");
+const sessionsBreadcrumb = document.getElementById("sessionsBreadcrumb");
+
+let _currentFolder = ""; // 模态内当前查看的子文件夹路径，"" = 根
+
+function renderSessionsBreadcrumb() {
+  sessionsBreadcrumb.innerHTML = "";
+  const rootBtn = document.createElement("button");
+  rootBtn.textContent = "/";
+  if (!_currentFolder) rootBtn.classList.add("current");
+  else rootBtn.addEventListener("click", () => { _currentFolder = ""; refreshSessionsList(); });
+  sessionsBreadcrumb.appendChild(rootBtn);
+  if (_currentFolder) {
+    const segs = _currentFolder.split("/").filter(Boolean);
+    let accum = "";
+    for (let i = 0; i < segs.length; i++) {
+      const sep = document.createElement("span");
+      sep.className = "sep";
+      sep.textContent = "/";
+      sessionsBreadcrumb.appendChild(sep);
+      const seg = segs[i];
+      accum = accum ? `${accum}/${seg}` : seg;
+      const btn = document.createElement("button");
+      btn.textContent = seg;
+      if (i === segs.length - 1) {
+        btn.classList.add("current");
+      } else {
+        const target = accum;
+        btn.addEventListener("click", () => { _currentFolder = target; refreshSessionsList(); });
+      }
+      sessionsBreadcrumb.appendChild(btn);
+    }
+  }
+}
 
 async function refreshSessionsList() {
   sessionsList.innerHTML = "";
-  let keys = [];
-  try { keys = await storage.listSessionIds(); } catch (e) { console.warn("list sessions failed", e); }
-  keys = keys.filter((k) => typeof k === "string" && k.endsWith(".atlas.zip"));
-  keys.sort((a, b) => a.localeCompare(b));
-  const cur = getCurrentPath();
-  for (const key of keys) {
-    let pkg = null;
-    try { pkg = await storage.getSession(key); } catch (_) {}
-    if (!pkg) continue;
-    const row = document.createElement("div");
-    row.className = "session-row";
-    if (key === cur) row.dataset.current = "true";
+  renderSessionsBreadcrumb();
 
-    const isEncrypted = pkg.encrypted === true;
-    const thumb = document.createElement("div");
-    thumb.className = "thumb" + (isEncrypted ? " locked" : "");
-    if (isEncrypted) {
-      thumb.textContent = "🔒";
-    } else if (pkg.thumb) {
-      const url = URL.createObjectURL(pkg.thumb);
-      thumb.style.backgroundImage = `url(${url})`;
-      // 不 revoke：模态关闭后整个 list 被 innerHTML 清掉，浏览器自然回收
+  // 1) 本地 IDB keys
+  let localKeys = [];
+  try { localKeys = await storage.listSessionIds(); } catch (e) { console.warn("list local failed", e); }
+  localKeys = localKeys.filter((k) => typeof k === "string" && k.endsWith(".atlas.zip"));
+  const localSet = new Set(localKeys);
+
+  // 2) 云端 auto-discovery（递归）
+  let cloudPaths = [];
+  if (cloud.isAuthConfigured() && cloud.isSignedIn()) {
+    try {
+      const items = await cloud.listAtlasesRecursive();
+      cloudPaths = items.map((it) => it.path);
+    } catch (e) { console.warn("list cloud failed:", e); }
+  }
+  const cloudSet = new Set(cloudPaths);
+
+  // 3) 取并集 → 按当前 folder 切片成子文件夹 + 文件
+  const allPaths = new Set([...localSet, ...cloudSet]);
+  const prefix = _currentFolder ? `${_currentFolder}/` : "";
+  const folders = new Set();
+  const files = [];
+  for (const p of allPaths) {
+    if (_currentFolder && !p.startsWith(prefix)) continue;
+    const rest = p.slice(prefix.length);
+    const slashIdx = rest.indexOf("/");
+    if (slashIdx >= 0) {
+      folders.add(rest.slice(0, slashIdx));
+    } else if (rest) {
+      files.push(p);
     }
-    row.appendChild(thumb);
+  }
 
+  const cur = getCurrentPath();
+
+  // 4) 渲染：folder 先（字母序）
+  for (const folderName of [...folders].sort((a, b) => a.localeCompare(b))) {
+    const row = document.createElement("div");
+    row.className = "session-row folder";
+    const thumb = document.createElement("div");
+    thumb.className = "thumb";
+    thumb.textContent = "📁";
+    row.appendChild(thumb);
     const body = document.createElement("div");
     body.className = "body";
-    const pathEl = document.createElement("div");
-    pathEl.className = "path";
-    pathEl.textContent = (isEncrypted ? "🔒 " : "") + key.replace(/\.atlas\.zip$/i, "");
-    body.appendChild(pathEl);
-    const meta = document.createElement("div");
-    meta.className = "meta";
+    const p = document.createElement("div");
+    p.className = "path";
+    p.textContent = folderName + "/";
+    body.appendChild(p);
+    row.appendChild(body);
+    const targetFolder = _currentFolder ? `${_currentFolder}/${folderName}` : folderName;
+    row.addEventListener("click", () => { _currentFolder = targetFolder; refreshSessionsList(); });
+    sessionsList.appendChild(row);
+  }
+
+  // 5) 渲染：file 后（字母序）
+  files.sort((a, b) => a.localeCompare(b));
+  for (const key of files) {
+    const inLocal = localSet.has(key);
+    const inCloud = cloudSet.has(key);
+    const pkg = inLocal ? await storage.getSession(key).catch(() => null) : null;
+    const row = renderSessionFileRow(key, { pkg, inLocal, inCloud, isCurrent: key === cur });
+    sessionsList.appendChild(row);
+  }
+}
+
+function renderSessionFileRow(key, { pkg, inLocal, inCloud, isCurrent }) {
+  const row = document.createElement("div");
+  row.className = "session-row";
+  if (isCurrent) row.dataset.current = "true";
+  if (!inLocal && inCloud) row.classList.add("cloud-only");
+
+  const isEncrypted = pkg && pkg.encrypted === true;
+  const thumb = document.createElement("div");
+  thumb.className = "thumb" + (isEncrypted ? " locked" : "");
+  if (isEncrypted) {
+    thumb.textContent = "🔒";
+  } else if (!inLocal && inCloud) {
+    thumb.textContent = "☁";
+  } else if (pkg && pkg.thumb) {
+    const url = URL.createObjectURL(pkg.thumb);
+    thumb.style.backgroundImage = `url(${url})`;
+  }
+  row.appendChild(thumb);
+
+  const body = document.createElement("div");
+  body.className = "body";
+  const pathEl = document.createElement("div");
+  pathEl.className = "path";
+  // 在当前文件夹视图下显示 leaf 名（去掉前缀）
+  const leafName = key.replace(/\.atlas\.zip$/i, "").slice(_currentFolder ? _currentFolder.length + 1 : 0);
+  pathEl.textContent = leafName;
+  body.appendChild(pathEl);
+
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  if (pkg) {
     const t = pkg.updatedAt ? new Date(pkg.updatedAt).toLocaleString() : "—";
     const sizeStr = pkg.atlas ? formatBytes(pkg.atlas.size) : "—";
-    meta.textContent = key === cur ? `当前 · ${t} · ${sizeStr}` : `${t} · ${sizeStr}`;
-    body.appendChild(meta);
-    row.appendChild(body);
+    meta.textContent = isCurrent ? `当前 · ${t} · ${sizeStr}` : `${t} · ${sizeStr}`;
+  } else if (inCloud) {
+    meta.textContent = "云端，本地无缓存（点打开会下载）";
+  }
+  body.appendChild(meta);
 
-    const actions = document.createElement("div");
-    actions.className = "actions";
-    // 打开按钮永远显示。current 行也显示「重新打开」—— 用于 boot 失败后重试 (加密 session 取消密码的恢复路径)
-    // 否则用户卡在「这个 session 在 localStorage 里是 current，但实际 scene 空着，又没按钮」的死角
-    {
-      const openBtn = document.createElement("button");
-      openBtn.textContent = key === cur ? "重新打开" : "打开";
-      openBtn.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        try {
-          await openSessionByPath(key);
-          closeSessionsModal();
-        } catch (err) {
-          showActionToast(`打开失败：${err.message || err}`, 4000);
-        }
-      });
-      actions.appendChild(openBtn);
+  // Badges
+  const badges = document.createElement("div");
+  badges.className = "badges";
+  if (inLocal) {
+    const b = document.createElement("span"); b.className = "badge local"; b.textContent = "本地"; badges.appendChild(b);
+  }
+  if (inCloud) {
+    const b = document.createElement("span"); b.className = "badge cloud"; b.textContent = "☁ 云端"; badges.appendChild(b);
+  }
+  if (isEncrypted) {
+    const b = document.createElement("span"); b.className = "badge encrypted"; b.textContent = "🔒 加密"; badges.appendChild(b);
+  }
+  if (inLocal && cloud.isAuthConfigured() && cloud.isSignedIn()) {
+    const stem = stemOfPath(key);
+    if (cloud.isCloudDirty(stem)) {
+      const b = document.createElement("span"); b.className = "badge dirty"; b.textContent = "未推送"; badges.appendChild(b);
     }
+  }
+  body.appendChild(badges);
+  row.appendChild(body);
+
+  // Actions
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const openBtn = document.createElement("button");
+  openBtn.textContent = isCurrent ? "重新打开" : (inLocal ? "打开" : "拉并打开");
+  openBtn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    try {
+      if (!inLocal && inCloud) await pullSessionFromCloudAndOpen(key);
+      else await openSessionByPath(key);
+      closeSessionsModal();
+    } catch (err) {
+      showActionToast(`打开失败：${err.message || err}`, 4000);
+    }
+  });
+  actions.appendChild(openBtn);
+
+  if (inLocal) {
     const cryptBtn = document.createElement("button");
     cryptBtn.textContent = isEncrypted ? "🔓 取消加密" : "🔒 加密";
     cryptBtn.title = isEncrypted ? "取消加密（需要原密码 + 强确认）" : "加密（设新密码）";
@@ -1476,26 +1597,74 @@ async function refreshSessionsList() {
       await refreshSessionsList();
     });
     actions.appendChild(cryptBtn);
-    const delBtn = document.createElement("button");
-    delBtn.className = "danger";
-    delBtn.textContent = "删除";
-    delBtn.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      if (!confirm(`删除 ${key}？无法撤销。`)) return;
-      try { await storage.deleteSession(key); } catch (err) { showActionToast(`删除失败：${err.message || err}`); return; }
-      if (key === getCurrentPath()) {
-        await newBlankSession(sessionFileName(DEFAULT_SESSION_NAME));
-      }
-      await refreshSessionsList();
-    });
-    actions.appendChild(delBtn);
-    row.appendChild(actions);
-
-    row.addEventListener("dblclick", async () => {
-      if (key !== getCurrentPath()) { await openSessionByPath(key); closeSessionsModal(); }
-    });
-    sessionsList.appendChild(row);
   }
+
+  const delBtn = document.createElement("button");
+  delBtn.className = "danger";
+  delBtn.textContent = "删除";
+  delBtn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const where = inLocal && inCloud ? "本地 + 云端" : (inLocal ? "本地" : "云端");
+    if (!confirm(`删除「${stemOfPath(key)}」(${where})？无法撤销。`)) return;
+    if (inLocal) {
+      try { await storage.deleteSession(key); } catch (err) { showActionToast(`本地删除失败：${err.message || err}`); }
+    }
+    if (inCloud && cloud.isAuthConfigured() && cloud.isSignedIn()) {
+      try { await cloud.deleteAtlas(stemOfPath(key)); }
+      catch (err) { console.warn("cloud delete failed:", err); }
+    }
+    if (key === getCurrentPath()) {
+      await newBlankSession(sessionFileName(DEFAULT_SESSION_NAME));
+    }
+    await refreshSessionsList();
+  });
+  actions.appendChild(delBtn);
+  row.appendChild(actions);
+
+  row.addEventListener("dblclick", async () => {
+    if (isCurrent) return;
+    try {
+      if (!inLocal && inCloud) await pullSessionFromCloudAndOpen(key);
+      else await openSessionByPath(key);
+      closeSessionsModal();
+    } catch (err) {
+      showActionToast(`打开失败：${err.message || err}`, 4000);
+    }
+  });
+
+  return row;
+}
+
+// 云端拉一个 session 到 IDB，然后用 openSessionByPath 打开（含密码 prompt 流程）
+async function pullSessionFromCloudAndOpen(path) {
+  const stem = stemOfPath(path);
+  showActionToast(`从 OneDrive 拉「${stem}」…`, 60000);
+  const result = await cloud.pullAtlasByPath(path);
+  if (!result) throw new Error(`OneDrive 上没有 ${path}`);
+  // 探测格式，决定 encrypted 标志，并可选地预存 thumb
+  let encrypted = false;
+  let thumb = null;
+  try {
+    const fmt = await detectAtlasFormat(result.blob);
+    encrypted = (fmt === "encrypted");
+    if (!encrypted) {
+      try {
+        const entries = await zipUnpack(result.blob);
+        if (entries["thumb.png"]) {
+          thumb = new Blob([entries["thumb.png"]], { type: "image/png" });
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+  await storage.putSession(path, {
+    name: stem,
+    updatedAt: Date.now(),
+    atlas: result.blob,
+    thumb,
+    encrypted,
+  });
+  await openSessionByPath(path);
+  showActionToast(`已打开：${stem}`);
 }
 
 async function openSessionsModal() {
@@ -1590,12 +1759,14 @@ document.getElementById("sessionsCloseBtn").addEventListener("click", closeSessi
 document.getElementById("sessionsRefreshBtn").addEventListener("click", refreshSessionsList);
 sessionsBackdrop.addEventListener("click", closeSessionsModal);
 document.getElementById("sessionsNewBtn").addEventListener("click", async () => {
-  const name = prompt("新会话路径（可带 / 组织到子文件夹，如 characters/wall）", "未命名");
+  // 默认在当前文件夹下新建
+  const defaultText = _currentFolder ? `${_currentFolder}/未命名` : "未命名";
+  const name = prompt("新会话路径（可带 / 组织到子文件夹，如 characters/wall）", defaultText);
   if (!name) return;
   const path = sessionFileName(name);
   const existing = await storage.getSession(path);
   if (existing) {
-    if (!confirm(`${path} 已存在。覆盖（先打开它再清空）？`)) return;
+    if (!confirm(`${path} 已存在。打开它？`)) return;
     await openSessionByPath(path);
     closeSessionsModal();
     return;

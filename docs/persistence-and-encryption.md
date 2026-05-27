@@ -240,3 +240,31 @@ if (typeof body === "string" || body instanceof ArrayBuffer || ArrayBuffer.isVie
 5. 模态「打开」按钮永远显示，current 行改成「重新打开」label
 
 教训：「`localStorage` 里宣称的 current」≠ 「scene 里实际加载的 session」。任何会基于「current」做 destructive 操作（save 时的 rename-delete-old）的代码，都要确认 current 是「实际加载过」的状态，而不是「localStorage 里记的、但加载失败过的」状态。
+
+## 0.8.0 sessions browser overhaul
+
+模态从 v0.6/0.7 的「平铺字母序列表」改成「文件夹导航 + 云端合并发现」：
+
+- **真正的文件夹导航**：`_currentFolder` 状态 + breadcrumb（`/` › `characters` › `wall`），点 folder 进、点 breadcrumb 节回。模态打开后 `_currentFolder` 持久（不重置到根），方便用户回到上次位置。
+- **云端 auto-discovery**：模态打开时 `cloud.listAtlasesRecursive()` 递归列 approot 下所有 `*.atlas.zip`，合并到列表。深度上限 8，避免病态嵌套。
+- **状态合并**：每个 row 三个独立 axes
+  - 来源：`本地` / `☁ 云端` / 两个都有（两个 badge 都挂）
+  - 加密：`🔒 加密`（只对本地已知，云端单独项目要拉了才知道）
+  - 同步：`未推送`（本地 dirty since last cloud push）
+- **云端-only row**：thumb 显「☁」，按钮叫「拉并打开」，点 → `cloud.pullAtlasByPath(path)` → 探测格式 → 写 IDB → `openSessionByPath` 启动正常 open 流程（含密码 prompt 如加密）。如果是非加密的，顺手把 `thumb.png` 也从 zip 里提出来存进 IDB pkg，下次模态显示带预览。
+- **删除**：合并删除 —— row 同时存在于本地 + 云端时，确认弹窗会说「本地 + 云端」，两边一起删（本地 `storage.deleteSession`，云端 `cloud.deleteAtlas`）。
+- **新建**：`prompt` 默认值会带当前 folder 前缀（`characters/未命名`），简化在子目录新建。
+
+### 加密 session 不自动 pull 的设计
+
+云端 row 列表里加密 session 是「未知项」—— 我们不在 list 阶段去 peek 内容（避免 N 次网络下载 + N 次密码 prompt）。只在用户主动点「拉并打开」时下载 + 探测 + 必要时 prompt 密码。
+
+代价：云端加密 session 在 list 里看起来跟非加密一样（都是 ☁ 图标）。点开才知道。可以将来通过 zip 顶层条目名 `data.atlas.zip` 在 HEAD 请求探测，但 Graph API 不便直接抓 zip 前 N 字节；先不做。
+
+### `listAtlasesRecursive` 深度上限
+
+Graph `listChildren(subfolder)` 每层一次请求。100 子文件夹 = 100 次 round-trip。当前递归无并行；深目录树会慢。短期接受；未来如有性能问题，可以并行 + cache。
+
+### Cloud-only session 拉下来之后
+
+下载后立即写一份 IDB（包含 atlas blob + 探测好的 encrypted 标志 + 提取的 thumb），让下次模态展示更丰富。**但**：纯网盘里加密 zip 的 thumb 我们提不出（被加密），所以加密 row 拉下来后 thumb 仍是 🔒，与本地一致。
