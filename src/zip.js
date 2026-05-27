@@ -1,147 +1,148 @@
-// 最小化 ZIP 读写：只支持 STORE（method=0，不压缩）。
+// ZIP 读写 = vendored zip.js (gildas-lormeau)。
+// UMD bundle 自挂 window.zip，HTML head 里以 classic <script> 加载。
 //
-// 为什么够：AtlasMaker 的 ZIP 内容是 scene.json + PNG/JPEG，后两者已经压缩过，
-// 用 DEFLATE 反而浪费 CPU。所以 STORE-only 就是正解，顺带把代码量压到 ~150 行无 deps。
+// 之前 v9-v0.6 我手写了 STORE-only zip。0.7 起切换：
+//   - 加密 (AES-256, WinZip 规范) 需要 zip.js
+//   - 不加密路径也走 zip.js，统一 API；STORE-only 仍是默认（{ level: 0 }）
 //
-// 标准 ZIP 工具（7z、Windows Explorer、unzip）都能读 STORE-only zip。
-// 不支持别人压的 DEFLATE zip —— 拒收即可（throw 提示用户重新压成 STORE）。
+// 格式（per AtlasMaker 约定）:
+//   - 不加密 session = 直接的 atlas zip:
+//       scene.json, images/<uuid>.<ext>, thumb.png
+//   - 加密 session = 外层 STORE-only 明文 zip 包一个 AES-256 加密的内层 atlas zip:
+//       外层: data.atlas.zip   (内容 = 加密的 inner zip)
+//       内层（解开后）：scene.json, images/<uuid>.<ext>, thumb.png（可有可无）
+//   外层故意不放 manifest / 任何识别信息 —— 全在加密层。
+//
+// detection: peek 外层 entries
+//   - "scene.json" 在 → 未加密直接格式
+//   - "data.atlas.zip" 在 → 加密格式，需要密码
 
-const SIG_LFH  = 0x04034b50;
-const SIG_CD   = 0x02014b50;
-const SIG_EOCD = 0x06054b50;
-
-// CRC-32（IEEE，table 法）
-const CRC_TABLE = (() => {
-  const t = new Uint32Array(256);
-  for (let i = 0; i < 256; i++) {
-    let c = i;
-    for (let j = 0; j < 8; j++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
-    t[i] = c >>> 0;
+function Z() {
+  if (typeof window === "undefined" || !window.zip) {
+    throw new Error("zip.js 未加载（应在 app.js 之前以 classic <script> 引入 vendor/zip-js/zip-full.min.js）");
   }
-  return t;
-})();
-
-function crc32(bytes) {
-  let c = 0xffffffff;
-  for (let i = 0; i < bytes.length; i++) {
-    c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
-  }
-  return (c ^ 0xffffffff) >>> 0;
+  return window.zip;
 }
 
-async function toBytes(data) {
-  if (data instanceof Uint8Array) return data;
-  if (data instanceof ArrayBuffer) return new Uint8Array(data);
-  if (data instanceof Blob) return new Uint8Array(await data.arrayBuffer());
-  if (typeof data === "string") return new TextEncoder().encode(data);
+// 首次访问时关掉 web workers —— inline worker 在某些场景被 CSP 拒；不开省心。
+let _configured = false;
+function ensureConfigured() {
+  if (_configured) return;
+  try { Z().configure({ useWebWorkers: false }); } catch (_) {}
+  _configured = true;
+}
+
+function toZipReader(data) {
+  const z = Z();
+  if (data instanceof Blob) return new z.BlobReader(data);
+  if (data instanceof Uint8Array) return new z.Uint8ArrayReader(data);
+  if (data instanceof ArrayBuffer) return new z.Uint8ArrayReader(new Uint8Array(data));
+  if (typeof data === "string") return new z.TextReader(data);
   throw new TypeError("zip: 不支持的数据类型");
 }
 
-/**
- * entries: array of { path: string, data: Blob | ArrayBuffer | Uint8Array | string }
- * 返回 Blob (application/zip)
- */
+// ----- 不加密 -----
+
+/** entries: [{ path, data: Blob|Uint8Array|ArrayBuffer|string }, ...]; return Blob (application/zip) */
 export async function zipPack(entries) {
-  const parts = [];
-  const cdParts = [];
-  let offset = 0;
+  ensureConfigured();
+  const z = Z();
+  const writer = new z.ZipWriter(new z.BlobWriter("application/zip"));
   for (const { path, data } of entries) {
-    const bytes = await toBytes(data);
-    const nameBytes = new TextEncoder().encode(path);
-    const crc = crc32(bytes);
-    const size = bytes.length;
-    // Local File Header
-    const lfh = new Uint8Array(30 + nameBytes.length);
-    const ldv = new DataView(lfh.buffer);
-    ldv.setUint32(0, SIG_LFH, true);
-    ldv.setUint16(4, 20, true);   // version needed
-    ldv.setUint16(6, 0x0800, true); // flags：bit 11 = UTF-8 filename
-    ldv.setUint16(8, 0, true);    // method = store
-    ldv.setUint16(10, 0, true);   // mod time
-    ldv.setUint16(12, 0x0021, true); // mod date = 1980-01-01
-    ldv.setUint32(14, crc, true);
-    ldv.setUint32(18, size, true);
-    ldv.setUint32(22, size, true);
-    ldv.setUint16(26, nameBytes.length, true);
-    ldv.setUint16(28, 0, true);   // extra length
-    lfh.set(nameBytes, 30);
-    parts.push(lfh, bytes);
-    // Central Directory entry
-    const cd = new Uint8Array(46 + nameBytes.length);
-    const cdv = new DataView(cd.buffer);
-    cdv.setUint32(0, SIG_CD, true);
-    cdv.setUint16(4, 20, true);   // version made by
-    cdv.setUint16(6, 20, true);   // version needed
-    cdv.setUint16(8, 0x0800, true); // flags
-    cdv.setUint16(10, 0, true);
-    cdv.setUint16(12, 0, true);
-    cdv.setUint16(14, 0x0021, true);
-    cdv.setUint32(16, crc, true);
-    cdv.setUint32(20, size, true);
-    cdv.setUint32(24, size, true);
-    cdv.setUint16(28, nameBytes.length, true);
-    cdv.setUint16(30, 0, true);
-    cdv.setUint16(32, 0, true);
-    cdv.setUint16(34, 0, true);
-    cdv.setUint16(36, 0, true);
-    cdv.setUint32(38, 0, true);
-    cdv.setUint32(42, offset, true);
-    cd.set(nameBytes, 46);
-    cdParts.push(cd);
-    offset += 30 + nameBytes.length + size;
+    await writer.add(path, toZipReader(data), { level: 0 });
   }
-  const cdOffset = offset;
-  let cdSize = 0;
-  for (const cd of cdParts) cdSize += cd.length;
-  // End of Central Directory
-  const eocd = new Uint8Array(22);
-  const edv = new DataView(eocd.buffer);
-  edv.setUint32(0, SIG_EOCD, true);
-  edv.setUint16(4, 0, true);
-  edv.setUint16(6, 0, true);
-  edv.setUint16(8, entries.length, true);
-  edv.setUint16(10, entries.length, true);
-  edv.setUint32(12, cdSize, true);
-  edv.setUint32(16, cdOffset, true);
-  edv.setUint16(20, 0, true);
-  return new Blob([...parts, ...cdParts, eocd], { type: "application/zip" });
+  return await writer.close();
 }
 
-/**
- * 解 zip。返回 { path: Uint8Array }。method != STORE 会抛错。
- */
+/** 返回 { path: Uint8Array } */
 export async function zipUnpack(blob) {
-  const buf = await blob.arrayBuffer();
-  const view = new DataView(buf);
-  // EOCD 在尾部，可能有 comment（最长 65535）。从后往前找 magic。
-  let eocdOffset = -1;
-  const minPos = Math.max(0, buf.byteLength - 22 - 0xffff);
-  for (let i = buf.byteLength - 22; i >= minPos; i--) {
-    if (view.getUint32(i, true) === SIG_EOCD) { eocdOffset = i; break; }
-  }
-  if (eocdOffset < 0) throw new Error("无效 ZIP：没找到 EOCD");
-  const cdCount = view.getUint16(eocdOffset + 10, true);
-  const cdOffset = view.getUint32(eocdOffset + 16, true);
-  const entries = {};
-  let p = cdOffset;
-  for (let i = 0; i < cdCount; i++) {
-    if (view.getUint32(p, true) !== SIG_CD) throw new Error(`无效 ZIP：CD 条目 ${i}`);
-    const method = view.getUint16(p + 10, true);
-    const csize = view.getUint32(p + 20, true);
-    const nameLen = view.getUint16(p + 28, true);
-    const extraLen = view.getUint16(p + 30, true);
-    const commentLen = view.getUint16(p + 32, true);
-    const lfhOffset = view.getUint32(p + 42, true);
-    const nameBytes = new Uint8Array(buf, p + 46, nameLen);
-    const name = new TextDecoder().decode(nameBytes);
-    p += 46 + nameLen + extraLen + commentLen;
-    if (method !== 0) {
-      throw new Error(`ZIP 条目 "${name}" 用了 method=${method}（DEFLATE 等），本工具只支持 STORE。重新打成 STORE 再试`);
+  ensureConfigured();
+  const z = Z();
+  const reader = new z.ZipReader(new z.BlobReader(blob));
+  try {
+    const entries = await reader.getEntries();
+    const out = {};
+    for (const e of entries) {
+      if (e.directory) continue;
+      out[e.filename] = await e.getData(new z.Uint8ArrayWriter());
     }
-    const lfhNameLen = view.getUint16(lfhOffset + 26, true);
-    const lfhExtraLen = view.getUint16(lfhOffset + 28, true);
-    const dataStart = lfhOffset + 30 + lfhNameLen + lfhExtraLen;
-    entries[name] = new Uint8Array(buf, dataStart, csize);
+    return out;
+  } finally { await reader.close(); }
+}
+
+// ----- 加密：AES-256（WinZip 规范，zip.js 默认 encryptionStrength=3）-----
+
+/**
+ * 加密：先把 entries 打成内层 AES-256 zip，再用外层明文 STORE-only zip 包一层（只放一个文件 data.atlas.zip）。
+ * 这样网盘 / 扫描器看到的是普通 zip 不会被拦截；用 7-Zip 解一层后再开内层才需要密码。
+ */
+export async function zipPackEncrypted(entries, password) {
+  ensureConfigured();
+  if (!password) throw new Error("加密 zip 需要密码");
+  const z = Z();
+  // 1) 内层加密 zip
+  const innerWriter = new z.ZipWriter(new z.BlobWriter("application/zip"), {
+    password,
+    encryptionStrength: 3, // 3 = AES-256
+  });
+  for (const { path, data } of entries) {
+    await innerWriter.add(path, toZipReader(data), { level: 0 });
   }
-  return entries;
+  const innerBlob = await innerWriter.close();
+  // 2) 外层明文包 —— 只放一个 entry，不暴露 manifest / 任何用户信息
+  const outerWriter = new z.ZipWriter(new z.BlobWriter("application/zip"));
+  await outerWriter.add("data.atlas.zip", new z.BlobReader(innerBlob), { level: 0 });
+  return await outerWriter.close();
+}
+
+/** 解密：peek 外层 → 取 data.atlas.zip → 用 password 解内层 → 返回 { path: Uint8Array } */
+export async function zipUnpackEncrypted(wrapperBlob, password) {
+  ensureConfigured();
+  if (!password) throw new Error("解密 zip 需要密码");
+  const z = Z();
+  // 1) 外层 (明文)
+  const outerReader = new z.ZipReader(new z.BlobReader(wrapperBlob));
+  let innerBlob;
+  try {
+    const outerEntries = await outerReader.getEntries();
+    const dataEntry = outerEntries.find((e) => !e.directory && e.filename === "data.atlas.zip");
+    if (!dataEntry) throw new Error("加密包结构异常：找不到 data.atlas.zip");
+    innerBlob = await dataEntry.getData(new z.BlobWriter("application/zip"));
+  } finally { await outerReader.close(); }
+  // 2) 内层 (加密)
+  const innerReader = new z.ZipReader(new z.BlobReader(innerBlob), { password });
+  try {
+    let entries;
+    try { entries = await innerReader.getEntries(); }
+    catch (e) { throw new Error("密码错或文件损坏（read entries）"); }
+    const out = {};
+    for (const e of entries) {
+      if (e.directory) continue;
+      try {
+        out[e.filename] = await e.getData(new z.Uint8ArrayWriter(), { password });
+      } catch (err) {
+        throw new Error("密码错或文件损坏（解密 " + e.filename + "）");
+      }
+    }
+    return out;
+  } finally { await innerReader.close(); }
+}
+
+// ----- 格式探测 -----
+
+/**
+ * peek atlas blob 顶层 entry，判断是 "direct"（未加密直接格式）还是 "encrypted"（外包加密格式）。
+ * 不解内层 / 不需要密码。
+ */
+export async function detectAtlasFormat(blob) {
+  ensureConfigured();
+  const z = Z();
+  const reader = new z.ZipReader(new z.BlobReader(blob));
+  try {
+    const entries = await reader.getEntries();
+    const names = new Set(entries.filter((e) => !e.directory).map((e) => e.filename));
+    if (names.has("scene.json")) return "direct";
+    if (names.has("data.atlas.zip")) return "encrypted";
+    throw new Error("非 atlas 格式（缺 scene.json 或 data.atlas.zip）");
+  } finally { await reader.close(); }
 }

@@ -49,6 +49,8 @@
     <link rel="stylesheet" href="./src/styles.css" />
     <!-- 版本号 SSoT：早于 app.js，给 window.ATLASMAKER_VERSION -->
     <script src="./src/version.js"></script>
+    <!-- ZIP 库 (gildas-lormeau/zip.js, UMD)：app.js 之前同步加载，挂到 window.zip -->
+    <script src="./src/vendor/zip-js/zip-full.min.js"></script>
   </head>
   <body>
     <!-- 无限工作台。pan/zoom 直接作用在 #world 的 transform 上。

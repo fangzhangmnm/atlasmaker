@@ -16,7 +16,7 @@ import {
 import { Input } from "./input.js";
 import { BTPManager, BTPError } from "./btp.js";
 import * as storage from "./storage.js";
-import { zipPack, zipUnpack } from "./zip.js";
+import { zipPack, zipUnpack, zipPackEncrypted, zipUnpackEncrypted, detectAtlasFormat } from "./zip.js";
 import * as cloud from "./cloud.js";
 import { sessionFileName } from "./config.js";
 
@@ -125,12 +125,13 @@ function onSessionNameChanged() {
 function setSaveStatus(state) {
   if (!saveStatusEl) return;
   saveStatusEl.dataset.state = state;
-  saveStatusEl.textContent = ({
+  const label = ({
     dirty:  "未保存",
     saving: "保存中…",
     saved:  "已保存",
     error:  "保存失败",
   })[state] || "";
+  saveStatusEl.textContent = _currentEncrypted ? `${label} 🔒` : label;
 }
 
 function markDirty() {
@@ -244,8 +245,14 @@ async function buildAtlasZip() {
   let thumb = null;
   try { thumb = await renderBoardThumb(512); } catch (_) {}
   if (thumb) entries.push({ path: "thumb.png", data: thumb });
+  // 加密：当前 session 标了加密 + 内存里有密码 → 走 wrap-with-AES 路径
+  // 不在内存的话强不起来（应该不可能 reach 这里 with encrypted + no password）
+  if (_currentEncrypted && _currentSessionPassword) {
+    const atlas = await zipPackEncrypted(entries, _currentSessionPassword);
+    return { atlas, thumb: null, doc, encrypted: true };
+  }
   const atlas = await zipPack(entries);
-  return { atlas, thumb, doc };
+  return { atlas, thumb, doc, encrypted: false };
 }
 
 // 当前 session 的 IDB key = "<sessionInput.value>.atlas.zip" / "characters/wall.atlas.zip" 之类。
@@ -268,19 +275,44 @@ let _activeCloudPath = getCurrentPath(); // 启动时假设 = IDB path（404 时
 
 function stemOfPath(path) { return path.replace(/\.atlas\.zip$/i, ""); }
 
+// ----- 加密状态（per session，纯内存，关页面就忘）-----
+let _currentSessionPassword = null;
+let _currentEncrypted = false;
+
+// 简单的 prompt 封装，全部 async 化（用 setTimeout 让 UI 刷一帧）
+function _delayedPrompt(message, isPassword = false) {
+  return new Promise((resolve) => setTimeout(() => resolve(window.prompt(message)), 0));
+}
+async function promptPassword(message = "输入密码") {
+  const pw = await _delayedPrompt(message, true);
+  return pw === null ? null : pw;
+}
+async function promptNewPassword(title = "设密码（用于加密这个会话）") {
+  const pw1 = await _delayedPrompt(title, true);
+  if (!pw1) return null;
+  const pw2 = await _delayedPrompt("再输一次确认密码", true);
+  if (pw1 !== pw2) { window.alert("两次密码不一致，已取消"); return null; }
+  return pw1;
+}
+async function confirmTypePhrase(phrase, message) {
+  const got = await _delayedPrompt(message);
+  return got === phrase;
+}
+
 async function saveCurrentSession() {
   if (_saving) return;
   _saving = true;
   setSaveStatus("saving");
   try {
-    const { atlas, thumb, doc } = await buildAtlasZip();
+    const { atlas, thumb, doc, encrypted } = await buildAtlasZip();
     const newPath = pathFromInput();
     const oldPath = _activeIDBPath;
     await storage.putSession(newPath, {
       name: doc.name,
       updatedAt: doc.updatedAt,
       atlas,
-      thumb,
+      thumb: encrypted ? null : thumb,
+      encrypted: !!encrypted,
     });
     // 重命名 IDB：新写完了 → 删老 key（_activeIDBPath != newPath = 用户改过 input）
     if (oldPath && oldPath !== newPath) {
@@ -304,8 +336,24 @@ async function saveCurrentSession() {
 }
 
 // 从 zip 解出来的 atlas 恢复到 scene。被 IDB 启动加载和 import 共用。
-async function applyAtlasZipBlob(atlasBlob) {
-  const entries = await zipUnpack(atlasBlob);
+// passwordHint 是可选预知密码（pull 时常用）；没传 + 是加密格式 = prompt 用户。
+async function applyAtlasZipBlob(atlasBlob, { passwordHint = null } = {}) {
+  const fmt = await detectAtlasFormat(atlasBlob);
+  let entries;
+  let usedPassword = null;
+  if (fmt === "encrypted") {
+    let pw = passwordHint;
+    if (!pw) pw = await promptPassword("输入密码以解开加密会话");
+    if (pw === null) throw new Error("已取消（未输密码）");
+    try {
+      entries = await zipUnpackEncrypted(atlasBlob, pw);
+      usedPassword = pw;
+    } catch (e) {
+      throw new Error(e.message || "密码错或文件损坏");
+    }
+  } else {
+    entries = await zipUnpack(atlasBlob);
+  }
   const sceneBytes = entries["scene.json"];
   if (!sceneBytes) throw new Error("ZIP 里没有 scene.json");
   const doc = JSON.parse(new TextDecoder().decode(sceneBytes));
@@ -337,6 +385,9 @@ async function applyAtlasZipBlob(atlasBlob) {
   scene._redoStack.length = 0;
   if (doc.board) board.setViewport(doc.board.tx, doc.board.ty, doc.board.scale);
   if (typeof doc.name === "string") { sessionInput.value = doc.name; applySessionTitle(); }
+  // 更新内存里的加密状态
+  _currentEncrypted = (fmt === "encrypted");
+  _currentSessionPassword = usedPassword;
   return doc;
 }
 
@@ -399,6 +450,8 @@ async function newBlankSession(path) {
   } finally { _loading = false; }
   _activeIDBPath = path;
   _activeCloudPath = null; // 全新的，云端没有
+  _currentEncrypted = false; // 新建默认不加密
+  _currentSessionPassword = null;
   setCurrentPath(path);
   _dirty = true; // 立刻写一次让它出现在列表里
   await saveCurrentSession();
@@ -1353,9 +1406,12 @@ async function refreshSessionsList() {
     row.className = "session-row";
     if (key === cur) row.dataset.current = "true";
 
+    const isEncrypted = pkg.encrypted === true;
     const thumb = document.createElement("div");
-    thumb.className = "thumb";
-    if (pkg.thumb) {
+    thumb.className = "thumb" + (isEncrypted ? " locked" : "");
+    if (isEncrypted) {
+      thumb.textContent = "🔒";
+    } else if (pkg.thumb) {
       const url = URL.createObjectURL(pkg.thumb);
       thumb.style.backgroundImage = `url(${url})`;
       // 不 revoke：模态关闭后整个 list 被 innerHTML 清掉，浏览器自然回收
@@ -1366,7 +1422,7 @@ async function refreshSessionsList() {
     body.className = "body";
     const pathEl = document.createElement("div");
     pathEl.className = "path";
-    pathEl.textContent = key.replace(/\.atlas\.zip$/i, "");
+    pathEl.textContent = (isEncrypted ? "🔒 " : "") + key.replace(/\.atlas\.zip$/i, "");
     body.appendChild(pathEl);
     const meta = document.createElement("div");
     meta.className = "meta";
@@ -1388,6 +1444,16 @@ async function refreshSessionsList() {
       });
       actions.appendChild(openBtn);
     }
+    const cryptBtn = document.createElement("button");
+    cryptBtn.textContent = isEncrypted ? "🔓 取消加密" : "🔒 加密";
+    cryptBtn.title = isEncrypted ? "取消加密（需要原密码 + 强确认）" : "加密（设新密码）";
+    cryptBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (isEncrypted) await decryptSessionToggle(key, pkg);
+      else await encryptSessionToggle(key, pkg);
+      await refreshSessionsList();
+    });
+    actions.appendChild(cryptBtn);
     const delBtn = document.createElement("button");
     delBtn.className = "danger";
     delBtn.textContent = "删除";
@@ -1416,6 +1482,81 @@ async function openSessionsModal() {
   await refreshSessionsList();
   sessionsModal.classList.remove("hidden");
   sessionsBackdrop.classList.remove("hidden");
+}
+
+// ----- 加密 toggle（per-session）-----
+// 加密：读 IDB pkg（未加密直接 zip）→ 解出 entries → 用新密码包成加密 zip → 写回 IDB
+async function encryptSessionToggle(path, pkg) {
+  if (pkg.encrypted) { showActionToast("已经是加密的"); return; }
+  let innerEntries;
+  try { innerEntries = await zipUnpack(pkg.atlas); }
+  catch (e) { showActionToast(`读取失败：${e.message}`, 4000); return; }
+  const pw = await promptNewPassword(`设密码以加密「${stemOfPath(path)}」`);
+  if (!pw) return;
+  let newAtlas;
+  try {
+    newAtlas = await zipPackEncrypted(
+      Object.entries(innerEntries).map(([p, d]) => ({ path: p, data: d })),
+      pw,
+    );
+  } catch (e) { showActionToast(`加密失败：${e.message}`, 4000); return; }
+  await storage.putSession(path, {
+    name: pkg.name,
+    updatedAt: Date.now(),
+    atlas: newAtlas,
+    thumb: null,
+    encrypted: true,
+  });
+  if (path === _activeIDBPath) {
+    _currentEncrypted = true;
+    _currentSessionPassword = pw;
+  }
+  if (cloud.isAuthConfigured() && cloud.isSignedIn()) {
+    cloud.setCloudDirty(stemOfPath(path), true);
+    refreshCloudUI();
+  }
+  showActionToast(`已加密：${stemOfPath(path)}（重新打开需要密码）`);
+}
+
+// 取消加密：读密码（验证）→ 强 consent → 解出 → 重打成 direct zip → 写回
+async function decryptSessionToggle(path, pkg) {
+  if (!pkg.encrypted) { showActionToast("当前已未加密"); return; }
+  const pw = await promptPassword(`输入「${stemOfPath(path)}」的密码`);
+  if (pw === null) return;
+  let innerEntries;
+  try { innerEntries = await zipUnpackEncrypted(pkg.atlas, pw); }
+  catch (e) { showActionToast(`密码错或文件损坏`, 4000); return; }
+  const phrase = "确定取消加密";
+  const ok = await confirmTypePhrase(
+    phrase,
+    `输入 "${phrase}" 确认\n\n取消加密后，画板内容会以明文存入 IndexedDB（以及推送后的 OneDrive）。任何拿到这台设备 / 网盘账户的人都能看到。\n\n继续？`,
+  );
+  if (!ok) { showActionToast("未确认，已取消"); return; }
+  // 提取 thumb（若内层有）
+  let thumb = null;
+  if (innerEntries["thumb.png"]) {
+    thumb = new Blob([innerEntries["thumb.png"]], { type: "image/png" });
+  }
+  let newAtlas;
+  try {
+    newAtlas = await zipPack(Object.entries(innerEntries).map(([p, d]) => ({ path: p, data: d })));
+  } catch (e) { showActionToast(`打包失败：${e.message}`, 4000); return; }
+  await storage.putSession(path, {
+    name: pkg.name,
+    updatedAt: Date.now(),
+    atlas: newAtlas,
+    thumb,
+    encrypted: false,
+  });
+  if (path === _activeIDBPath) {
+    _currentEncrypted = false;
+    _currentSessionPassword = null;
+  }
+  if (cloud.isAuthConfigured() && cloud.isSignedIn()) {
+    cloud.setCloudDirty(stemOfPath(path), true);
+    refreshCloudUI();
+  }
+  showActionToast(`已取消加密：${stemOfPath(path)}`);
 }
 function closeSessionsModal() {
   sessionsModal.classList.add("hidden");

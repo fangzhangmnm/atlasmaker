@@ -28,6 +28,7 @@ const PRECACHE_URLS = [
   "./src/cloud.js",
   "./src/vendor/btp/v1/btp.js",
   "./src/vendor/msal/msal-browser.min.js",
+  "./src/vendor/zip-js/zip-full.min.js",
 ];
 
 self.addEventListener("install", (event) => {
