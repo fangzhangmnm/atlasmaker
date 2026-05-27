@@ -397,9 +397,17 @@ const vpDeleteBtn = document.getElementById("vpDelete");
 
 // ----- 图片属性浮窗 -----
 const imgPanel = document.getElementById("imagePanel");
+const imgNaturalLabel = document.getElementById("imgNaturalLabel");
 const imgLock = document.getElementById("imgLock");
 const imgInterp = document.getElementById("imgInterp");
 const imgDeleteBtn = document.getElementById("imgDelete");
+
+function formatBytes(n) {
+  if (!Number.isFinite(n)) return "—";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(2)} MB`;
+}
 
 document.getElementById("viewportPanelClose").addEventListener("click", () => {
   scene.clearSelection();
@@ -428,6 +436,9 @@ function refreshPanels() {
   } else if (sel && sel.type === "image") {
     imgPanel.classList.remove("hidden");
     vpPanel.classList.add("hidden");
+    // 显示原图分辨率 + blob 字节 —— 让用户能看出哪张是 4K 大块头白浪费内存
+    const sizeStr = sel.blob ? formatBytes(sel.blob.size) : "—";
+    imgNaturalLabel.textContent = `${sel.naturalW}×${sel.naturalH} · ${sizeStr}`;
     imgLock.setAttribute("aria-pressed", sel.locked ? "true" : "false");
     imgLock.textContent = sel.locked ? "🔒" : "🔓";
     imgInterp.value = sel.interp || "linear";
