@@ -2040,6 +2040,10 @@ input.setTool("select");
 // 拖拽中不能 innerHTML 清空 —— 否则把手 DOM 被销毁，pointerCapture 丢，drag 中断。
 // 所以：选区集没变 → 只更新位置；变了 → 重建。
 let _renderedSelSig = "";
+// 0.11.2 fix: _perspState 之前声明在下面 perspective 段里（line ~2591），但 renderOverlay
+// 第一行就引用它。模块 init 同步路径里只要有人在那行之前调到 renderOverlay 就 TDZ → ReferenceError。
+// iPad 首次加载暴露过。把声明提上来。
+let _perspState = null;  // { objId, corners[4]={x,y world}, svgEl, lineEl, handles[4] }
 function renderOverlay() {
   if (crop.isActive()) {
     renderCropOverlay();
@@ -2588,7 +2592,7 @@ window.addEventListener("keydown", (ev) => {
 // ----- Perspective 4-point fix 模式 -----
 // 4 个 handle 标 source quad 的 4 个角（NW, NE, SE, SW）→ Apply 算 homography → 全分辨率 inverse-warp 烤新 blob
 // 跟 crop 同款 mode lifecycle，只是数学不一样。MVP 要求 obj 无 rotation/flip/crop（用同一个 reset toast）。
-let _perspState = null;  // { objId, corners[4]={x,y world}, svgEl, lineEl, handles[4] }
+// _perspState 声明已上移到 renderOverlay 前（0.11.2 TDZ fix）。
 let _perspDragState = null;
 const perspToolbar = document.getElementById("perspToolbar");
 const perspWInput = document.getElementById("perspW");
