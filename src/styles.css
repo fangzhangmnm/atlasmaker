@@ -353,6 +353,35 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
 .hud .sep { opacity: 0.4; }
 .hud .version { opacity: 0.6; font-variant-numeric: tabular-nums; }
 
+/* Adjust 浮窗：dock 在 image 浮窗左边（image 默认右上 16px + 260 宽 → adjust 右移 292px） */
+#adjustPanel {
+  top: 80px;
+  right: 292px;
+}
+.adjust-row {
+  display: grid;
+  grid-template-columns: 80px 1fr 48px;
+  gap: 8px;
+  align-items: center;
+}
+.adjust-row .row-label { font-size: 12px; color: var(--ink-soft); }
+.adjust-row input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.adjust-value {
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--ink-soft);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.adjust-hint {
+  font-size: 11px;
+  color: var(--ink-soft);
+  font-style: italic;
+}
+
 /* 浮窗（viewport 属性） */
 .float-panel {
   position: fixed;
@@ -363,7 +392,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   border: 1px solid var(--line);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  z-index: 20;
+  z-index: 15;
 }
 .float-panel.hidden { display: none; }
 .float-panel-head {

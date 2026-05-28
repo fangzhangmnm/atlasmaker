@@ -1,3 +1,5 @@
+import { filtersToCssString } from "./filters.js";
+
 // Scene = 对象集合。每个对象有：id, type, x, y, w, h（世界单位），加上类型特定字段。
 // 渲染：DOM 节点。世界 px 直接写 left/top/width/height；外层 #world 的 scale 负责放大缩小。
 //
@@ -364,6 +366,9 @@ export class Scene {
       const img = el.querySelector("img");
       if (img) {
         img.style.imageRendering = obj.interp === "nearest" ? "pixelated" : "auto";
+        // 非破坏调色：把 obj.filters 转 CSS filter 字符串挂 img.style.filter
+        // 浏览器 GPU 合成时一并应用 → 实时预览零成本。bake 走 Rasterize 走 ctx.filter 同字符串。
+        img.style.filter = obj.filters ? filtersToCssString(obj.filters) : "";
         // 非破坏裁切：obj.crop 设定 → img 绝对定位 + 放大 + 偏移，让 crop 区域正好填满 .obj
         if (obj.crop) {
           const naturalW = obj.naturalW || 1;

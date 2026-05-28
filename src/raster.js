@@ -1,6 +1,7 @@
 // 光栅化（rasterize / bake）模块。
 //
 // 单一职责：把 image obj 的「非破坏字段」（crop / filters / 等）烤进新 blob。
+import { filtersToCssString } from "./filters.js";
 // 不碰 scene，不碰 UI。纯函数 in：source blob + 烤参数；out：新 blob。
 //
 // 后续要接：
@@ -23,12 +24,13 @@
  * @param {number} p.naturalW — 源 natural 宽
  * @param {number} p.naturalH — 源 natural 高
  * @param {?{x:number,y:number,w:number,h:number}} p.crop — 可选裁切（natural px），空 = 整图
+ * @param {?Object} p.filters — 可选调色 filter chain（同 obj.filters 结构），空 = 不调色
  * @param {number} p.targetW — 目标输出宽（px）
  * @param {number} p.targetH — 目标输出高（px）
  * @param {"adaptive"|"nearest"} p.mode — 重采样模式
  * @returns {Promise<Blob>} 输出 PNG blob
  */
-export async function rasterizeImage({ blob, naturalW, naturalH, crop, targetW, targetH, mode }) {
+export async function rasterizeImage({ blob, naturalW, naturalH, crop, filters, targetW, targetH, mode }) {
   if (!blob) throw new Error("rasterizeImage: no source blob");
   if (!targetW || !targetH || targetW < 1 || targetH < 1) {
     throw new Error(`rasterizeImage: invalid target ${targetW}×${targetH}`);
@@ -49,6 +51,11 @@ export async function rasterizeImage({ blob, naturalW, naturalH, crop, targetW, 
     } else {
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = "high";
+    }
+    // 把 filters 烤进：ctx.filter 接受跟 CSS 同款字符串，drawImage 一并应用
+    if (filters) {
+      const fs = filtersToCssString(filters);
+      if (fs) ctx.filter = fs;
     }
     ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
     return await new Promise((res, rej) =>

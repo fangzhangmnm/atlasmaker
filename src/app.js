@@ -21,6 +21,7 @@ import * as cloud from "./cloud.js";
 import { sessionFileName } from "./config.js";
 import { rasterizeImage } from "./raster.js";
 import * as crop from "./crop.js";
+import { filtersToCssString } from "./filters.js";
 import { makeSwatchBlob, samplePixel, worldToNaturalPx, colorToHex, hexToColor } from "./swatch.js";
 
 const SCENE_FORMAT_VERSION = 1;
@@ -272,6 +273,10 @@ async function renderBoardThumb(maxSize = 512) {
       const imgEl = node && node.querySelector("img");
       if (!imgEl || !imgEl.complete || !imgEl.naturalWidth) continue;
       ctx.imageSmoothingEnabled = obj.interp !== "nearest";
+      // Bake CSS filter 进 thumb（drawImage 不会自动套 img 的 style.filter）
+      const fs = obj.filters ? filtersToCssString(obj.filters) : "";
+      const savedFilter = ctx.filter;
+      ctx.filter = fs || "none";
       if (obj.rotation) {
         const cx = (tl.x + br.x) / 2, cy = (tl.y + br.y) / 2;
         ctx.save();
@@ -282,6 +287,7 @@ async function renderBoardThumb(maxSize = 512) {
       } else {
         try { ctx.drawImage(imgEl, tl.x, tl.y, w_, h_); } catch (_) {}
       }
+      ctx.filter = savedFilter;
     }
     // viewports（dashed frame + 淡 accent 底）
     ctx.lineWidth = 2;
@@ -1060,7 +1066,9 @@ function refreshPanels() {
     // 显示原图分辨率 + blob 字节 —— 让用户能看出哪张是 4K 大块头白浪费内存
     const sizeStr = sel.blob ? formatBytes(sel.blob.size) : "—";
     const cropStr = sel.crop ? ` (cropped ${Math.round(sel.crop.w)}×${Math.round(sel.crop.h)})` : "";
-    imgNaturalLabel.textContent = `${sel.naturalW}×${sel.naturalH}${cropStr} · ${sizeStr}`;
+    const hasF = sel.filters && Object.values(sel.filters).some((v) => v && Math.abs(v) > 0.01);
+    const fStr = hasF ? " · adjusted" : "";
+    imgNaturalLabel.textContent = `${sel.naturalW}×${sel.naturalH}${cropStr}${fStr} · ${sizeStr}`;
     imgLock.setAttribute("aria-pressed", sel.locked ? "true" : "false");
     imgLock.innerHTML = sel.locked ? ICON_LOCK_CLOSED : ICON_LOCK_OPEN;
     imgInterp.value = sel.interp || "linear";
@@ -1245,7 +1253,8 @@ function openRasterizeDialog() {
   _rasterAspect = ch > 0 ? cw / ch : 1;
   rasterLockAspect.checked = true;
   rasterModeSelect.value = sel.interp === "nearest" ? "nearest" : "adaptive";
-  rasterSourceLabel.textContent = `Source: ${sel.naturalW}×${sel.naturalH}${sel.crop ? ` (cropped ${cw}×${ch})` : ""} · ${formatBytes(sel.blob.size)}`;
+  const hasFilters = sel.filters && Object.values(sel.filters).some((v) => v && Math.abs(v) > 0.01);
+  rasterSourceLabel.textContent = `Source: ${sel.naturalW}×${sel.naturalH}${sel.crop ? ` (cropped ${cw}×${ch})` : ""}${hasFilters ? " (filtered)" : ""} · ${formatBytes(sel.blob.size)}`;
   _rasterUpdateEstimate();
   rasterBackdrop.classList.remove("hidden");
   rasterDialog.classList.remove("hidden");
@@ -1307,6 +1316,7 @@ rasterApplyBtn.addEventListener("click", async () => {
         naturalW: obj.naturalW,
         naturalH: obj.naturalH,
         crop: obj.crop,
+        filters: obj.filters,
         targetW,
         targetH,
         mode,
@@ -1315,8 +1325,8 @@ rasterApplyBtn.addEventListener("click", async () => {
     const newSrc = _newImageSrc(newBlob);
     scene.act(() => {
       scene.replaceImageBlob(id, newBlob, newSrc);
-      // 同步更新 natural 尺寸 + 重置 crop（已 baked 进新 blob）
-      scene.update(id, { naturalW: targetW, naturalH: targetH, crop: undefined });
+      // 同步更新 natural 尺寸 + 重置 crop / filters（已 baked 进新 blob）
+      scene.update(id, { naturalW: targetW, naturalH: targetH, crop: undefined, filters: undefined });
     });
     showActionToast(`Rasterized to ${targetW}×${targetH} (${formatBytes(newBlob.size)})`);
   } catch (e) {
@@ -1326,6 +1336,96 @@ rasterApplyBtn.addEventListener("click", async () => {
 });
 
 imgRasterizeBtn.addEventListener("click", () => openRasterizeDialog());
+
+// ----- Adjust 调色 filter chain -----
+// 非破坏：滑块改 obj.filters → _applyTransform 写 img.style.filter（CSS GPU 合成，实时预览零成本）。
+// Bake：Rasterize 时 raster.js 把同样的 filter 字符串挂 ctx.filter 烤进新 blob。
+// Undo coalesce：每次拖滑块只生成 1 个 undo entry（pointerdown 起 beginAct，pointerup 起 endAct）。
+const adjustPanel = document.getElementById("adjustPanel");
+const adjustResetBtn = document.getElementById("adjustReset");
+const adjustPanelCloseBtn = document.getElementById("adjustPanelClose");
+const adjustSliders = adjustPanel ? adjustPanel.querySelectorAll('input[type="range"][data-filter]') : [];
+const adjustValueLabels = adjustPanel ? adjustPanel.querySelectorAll(".adjust-value") : [];
+
+function _adjustTargetObj() {
+  const sel = scene.firstSelected();
+  return (sel && sel.type === "image") ? sel : null;
+}
+function _syncAdjustPanelToObj(obj) {
+  const f = (obj && obj.filters) || { brightness: 0, contrast: 0, saturation: 0, hue: 0 };
+  for (const slider of adjustSliders) {
+    const key = slider.dataset.filter;
+    const v = f[key] || 0;
+    slider.value = v;
+    const label = adjustPanel.querySelector(`.adjust-value[data-for="${key}"]`);
+    if (label) label.textContent = key === "hue" ? `${v}°` : `${v}`;
+  }
+}
+function openAdjustPanel() {
+  const obj = _adjustTargetObj();
+  if (!obj) { showActionToast("Select an image first", 2500); return; }
+  _syncAdjustPanelToObj(obj);
+  adjustPanel.classList.remove("hidden");
+}
+function closeAdjustPanel() {
+  adjustPanel.classList.add("hidden");
+}
+
+document.getElementById("imgAdjust").addEventListener("click", () => openAdjustPanel());
+adjustPanelCloseBtn.addEventListener("click", () => closeAdjustPanel());
+
+// 选区变 → 同步 panel 滑块到新 obj.filters（若 panel 还开着）
+scene.onChange(() => {
+  if (!adjustPanel.classList.contains("hidden")) {
+    const obj = _adjustTargetObj();
+    if (obj) _syncAdjustPanelToObj(obj);
+    else closeAdjustPanel(); // 选区没了 / 选了 viewport → 自动关
+  }
+});
+
+// Slider 拖拽：pointerdown beginAct，input 期间只 update（不推 undo），pointerup endAct
+// 多个滑块共用一个 act —— 同一次「调色操作」一个 undo entry，即使拖了多个滑块也合一。
+let _adjustActOpen = false;
+function _adjustBegin() {
+  if (_adjustActOpen) return;
+  scene.beginAct();
+  _adjustActOpen = true;
+}
+function _adjustCommit() {
+  if (!_adjustActOpen) return;
+  scene.endAct();
+  _adjustActOpen = false;
+}
+for (const slider of adjustSliders) {
+  slider.addEventListener("pointerdown", _adjustBegin);
+  slider.addEventListener("input", () => {
+    const obj = _adjustTargetObj();
+    if (!obj) return;
+    const key = slider.dataset.filter;
+    const val = parseInt(slider.value, 10) || 0;
+    const newFilters = { ...(obj.filters || {}), [key]: val };
+    scene.update(obj.id, { filters: newFilters });
+    const label = adjustPanel.querySelector(`.adjust-value[data-for="${key}"]`);
+    if (label) label.textContent = key === "hue" ? `${val}°` : `${val}`;
+  });
+  slider.addEventListener("pointerup", _adjustCommit);
+  slider.addEventListener("pointercancel", _adjustCommit);
+  // 键盘改值（focus + 方向键）也要 act 包裹
+  slider.addEventListener("change", () => {
+    // change 在拖完或键盘改完触发；act 已在 pointerup commit，键盘场景下没 pointer 事件 → 这里兜底
+    if (!_adjustActOpen) return; // pointer 路径已 commit
+  });
+  slider.addEventListener("keydown", () => { if (!_adjustActOpen) _adjustBegin(); });
+  slider.addEventListener("keyup", () => { if (_adjustActOpen) _adjustCommit(); });
+}
+
+// Reset all：单 act 一次，把所有 filters 清零
+adjustResetBtn.addEventListener("click", () => {
+  const obj = _adjustTargetObj();
+  if (!obj) return;
+  scene.act(() => scene.update(obj.id, { filters: undefined }));
+  _syncAdjustPanelToObj(obj);
+});
 
 // ----- z-order 按钮（两个 panel 共用一套 handler） -----
 function wireZBtn(btnId, fn) {
@@ -1930,7 +2030,7 @@ function downloadBlob(blob, name) {
 // ----- OneDrive 同步 -----
 const cloudPill = document.getElementById("cloudPill");
 const cloudLabel = document.getElementById("cloudLabel");
-const cloudPushBtn = document.getElementById("cloudPushBtn");
+// cloudPushBtn 在 updateSaveBtnState 块里已经 declared，不在这里重复
 
 function refreshCloudUI() {
   const signedIn = cloud.isSignedIn();

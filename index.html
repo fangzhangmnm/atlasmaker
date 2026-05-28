@@ -275,6 +275,9 @@
           <button class="sheet-action ghost" id="imgResetCrop" type="button" title="Remove crop (restore full image)">Reset crop</button>
         </div>
         <div class="row">
+          <button class="sheet-action" id="imgAdjust" type="button" title="Color adjust (brightness / contrast / saturation / hue) — non-destructive, bake via Rasterize">Adjust…</button>
+        </div>
+        <div class="row">
           <button class="sheet-action" id="imgRasterize" type="button" title="Bake current view (crop + resample) into a new image at a chosen resolution">Rasterize…</button>
         </div>
         <div class="row">
@@ -305,6 +308,40 @@
       <span class="crop-hint">Drag handles inward · Enter = apply · Esc = cancel</span>
       <button id="cropCancel" type="button" class="ghost">Cancel</button>
       <button id="cropApply" type="button" class="primary">Apply</button>
+    </div>
+
+    <!-- Adjust（调色 filter chain）浮窗：dock 右侧，跟图片浮窗并列 -->
+    <div id="adjustPanel" class="float-panel hidden" role="dialog" aria-label="Color adjust">
+      <div class="float-panel-head">
+        <span class="float-panel-title">Adjust</span>
+        <button id="adjustReset" class="sheet-action ghost" type="button" title="Reset all filters">Reset</button>
+        <button id="adjustPanelClose" class="close-x" type="button" aria-label="Close">×</button>
+      </div>
+      <div class="float-panel-body">
+        <label class="row adjust-row">
+          <span class="row-label">Brightness</span>
+          <input id="adjBrightness" type="range" min="-100" max="100" step="1" value="0" data-filter="brightness">
+          <span class="adjust-value" data-for="brightness">0</span>
+        </label>
+        <label class="row adjust-row">
+          <span class="row-label">Contrast</span>
+          <input id="adjContrast" type="range" min="-100" max="100" step="1" value="0" data-filter="contrast">
+          <span class="adjust-value" data-for="contrast">0</span>
+        </label>
+        <label class="row adjust-row">
+          <span class="row-label">Saturation</span>
+          <input id="adjSaturation" type="range" min="-100" max="100" step="1" value="0" data-filter="saturation">
+          <span class="adjust-value" data-for="saturation">0</span>
+        </label>
+        <label class="row adjust-row">
+          <span class="row-label">Hue</span>
+          <input id="adjHue" type="range" min="-180" max="180" step="1" value="0" data-filter="hue">
+          <span class="adjust-value" data-for="hue">0°</span>
+        </label>
+        <div class="row">
+          <span class="adjust-hint">Filters apply non-destructively. Rasterize to bake.</span>
+        </div>
+      </div>
     </div>
 
     <!-- Rasterize 对话框 -->
