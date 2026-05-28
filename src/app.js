@@ -27,6 +27,7 @@ import {
   applyLevels, applyCurves, buildCurveLut, applyColorBalance,
   bakeImageWithCanvasFilter, buildPreviewSource,
 } from "./canvas-filters.js";
+import { bakePerspective, estimateOutputSize } from "./perspective.js";
 import { makeSwatchBlob, samplePixel, worldToNaturalPx, colorToHex, hexToColor } from "./swatch.js";
 
 const SCENE_FORMAT_VERSION = 1;
@@ -1873,6 +1874,10 @@ function renderOverlay() {
     renderCropOverlay();
     return;
   }
+  if (_perspState) {
+    renderPerspectiveOverlay();
+    return;
+  }
   const multi = scene.selection.size > 1;
   // 多选时签名 = "multi:<ids>"，单选 = id。变了就重建（多选没有 handle）。
   const sig = (multi ? "multi:" : "") + Array.from(scene.selection).join(",");
@@ -2330,6 +2335,187 @@ window.addEventListener("keydown", (ev) => {
   if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
   if (ev.key === "Enter") { ev.preventDefault(); crop.commit(); }
   else if (ev.key === "Escape") { ev.preventDefault(); crop.cancel(); }
+}, true);
+
+// ----- Perspective 4-point fix 模式 -----
+// 4 个 handle 标 source quad 的 4 个角（NW, NE, SE, SW）→ Apply 算 homography → 全分辨率 inverse-warp 烤新 blob
+// 跟 crop 同款 mode lifecycle，只是数学不一样。MVP 要求 obj 无 rotation/flip/crop（用同一个 reset toast）。
+let _perspState = null;  // { objId, corners[4]={x,y world}, svgEl, lineEl, handles[4] }
+let _perspDragState = null;
+const perspToolbar = document.getElementById("perspToolbar");
+const perspWInput = document.getElementById("perspW");
+const perspHInput = document.getElementById("perspH");
+
+function _perspNaturalQuad(obj, cornersWorld) {
+  // obj 无 rotation/flip/crop（mode 进入时保证）→ 简单线性映射 world → natural
+  const sx = obj.naturalW / obj.w;
+  const sy = obj.naturalH / obj.h;
+  return cornersWorld.map((c) => ({ x: (c.x - obj.x) * sx, y: (c.y - obj.y) * sy }));
+}
+
+function _perspUpdateAutoSize() {
+  if (!_perspState) return;
+  const obj = scene.get(_perspState.objId);
+  if (!obj) return;
+  const nat = _perspNaturalQuad(obj, _perspState.corners);
+  const est = estimateOutputSize(nat);
+  perspWInput.value = est.w;
+  perspHInput.value = est.h;
+}
+
+function enterPerspectiveMode(obj) {
+  if (crop.isActive()) return;
+  if ((obj.rotation && Math.abs(obj.rotation) > 0.01) || obj.flipH || obj.flipV || obj.crop) {
+    showActionToast("Perspective needs the image with no rotation / flip / crop — reset first (or Rasterize to bake them).", 5500);
+    return;
+  }
+  // 初始 4 个角放在 obj bbox 4 个角（用户拖到照片里那个矩形的实际角）
+  _perspState = {
+    objId: obj.id,
+    corners: [
+      { x: obj.x,         y: obj.y         }, // NW
+      { x: obj.x + obj.w, y: obj.y         }, // NE
+      { x: obj.x + obj.w, y: obj.y + obj.h }, // SE
+      { x: obj.x,         y: obj.y + obj.h }, // SW
+    ],
+    svgEl: null, lineEl: null, handles: [],
+  };
+  // 在 overlay 里画 SVG + 4 handles
+  overlayEl.innerHTML = "";
+  const svgNS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNS, "svg");
+  svg.setAttribute("class", "persp-svg");
+  const poly = document.createElementNS(svgNS, "polygon");
+  poly.setAttribute("class", "persp-line");
+  svg.appendChild(poly);
+  overlayEl.appendChild(svg);
+  _perspState.svgEl = svg;
+  _perspState.lineEl = poly;
+  for (let i = 0; i < 4; i++) {
+    const h = document.createElement("div");
+    h.className = "persp-handle";
+    h.dataset.idx = i;
+    h.addEventListener("pointerdown", onPerspHandlePointerDown);
+    overlayEl.appendChild(h);
+    _perspState.handles.push(h);
+  }
+  perspToolbar.classList.remove("hidden");
+  document.body.dataset.cropMode = "1"; // 复用 crop 的 input lock (禁误点别 obj)
+  _perspUpdateAutoSize();
+  renderOverlay();
+}
+
+function exitPerspectiveMode() {
+  _perspState = null;
+  overlayEl.innerHTML = "";
+  perspToolbar.classList.add("hidden");
+  delete document.body.dataset.cropMode;
+  renderOverlay();
+}
+
+function renderPerspectiveOverlay() {
+  if (!_perspState) return;
+  const obj = scene.get(_perspState.objId);
+  if (!obj) { exitPerspectiveMode(); return; }
+  const br = boardEl.getBoundingClientRect();
+  const pts = _perspState.corners.map((c) => {
+    const s = board.worldToScreen(c.x, c.y);
+    return { x: s.x - br.left, y: s.y - br.top };
+  });
+  // polygon points
+  _perspState.lineEl.setAttribute("points", pts.map((p) => `${p.x},${p.y}`).join(" "));
+  // 4 handles
+  for (let i = 0; i < 4; i++) {
+    _perspState.handles[i].style.left = `${pts[i].x}px`;
+    _perspState.handles[i].style.top  = `${pts[i].y}px`;
+  }
+}
+
+function onPerspHandlePointerDown(ev) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  const idx = parseInt(ev.currentTarget.dataset.idx, 10);
+  _perspDragState = {
+    idx,
+    startWorld: board.screenToWorld(ev.clientX, ev.clientY),
+    startCorner: { ..._perspState.corners[idx] },
+    handleEl: ev.currentTarget,
+  };
+  try { ev.currentTarget.setPointerCapture(ev.pointerId); } catch (_) {}
+  ev.currentTarget.addEventListener("pointermove", onPerspHandlePointerMove);
+  ev.currentTarget.addEventListener("pointerup", onPerspHandlePointerUp);
+  ev.currentTarget.addEventListener("pointercancel", onPerspHandlePointerUp);
+}
+function onPerspHandlePointerMove(ev) {
+  if (!_perspDragState) return;
+  const s = _perspDragState;
+  const w = board.screenToWorld(ev.clientX, ev.clientY);
+  _perspState.corners[s.idx] = {
+    x: s.startCorner.x + (w.x - s.startWorld.x),
+    y: s.startCorner.y + (w.y - s.startWorld.y),
+  };
+  _perspUpdateAutoSize();
+  renderOverlay();
+}
+function onPerspHandlePointerUp(ev) {
+  if (!_perspDragState) return;
+  const h = _perspDragState.handleEl;
+  try { h.releasePointerCapture(ev.pointerId); } catch (_) {}
+  h.removeEventListener("pointermove", onPerspHandlePointerMove);
+  h.removeEventListener("pointerup", onPerspHandlePointerUp);
+  h.removeEventListener("pointercancel", onPerspHandlePointerUp);
+  _perspDragState = null;
+}
+
+// Apply：算 homography + bake + replaceImageBlob
+async function applyPerspective() {
+  if (!_perspState) return;
+  const obj = scene.get(_perspState.objId);
+  if (!obj || !obj.blob) { exitPerspectiveMode(); return; }
+  const outW = parseInt(perspWInput.value, 10) || 0;
+  const outH = parseInt(perspHInput.value, 10) || 0;
+  if (outW < 1 || outH < 1) {
+    showActionToast("Invalid output dimensions", 3000);
+    return;
+  }
+  const natQuad = _perspNaturalQuad(obj, _perspState.corners);
+  const objId = obj.id;
+  exitPerspectiveMode();
+  try {
+    const newBlob = await withBusy(`Perspective fix → ${outW}×${outH}…`, () =>
+      bakePerspective(obj.blob, natQuad, outW, outH)
+    );
+    const newSrc = _newImageSrc(newBlob);
+    // 新 obj：保持 world 左上角 + 横向世界宽不变；高 = 按新 aspect 算；natural = 输出尺寸
+    const aspect = outW / outH;
+    const newWWorld = obj.w;
+    const newHWorld = obj.w / aspect;
+    scene.act(() => {
+      scene.replaceImageBlob(objId, newBlob, newSrc);
+      scene.update(objId, { naturalW: outW, naturalH: outH, h: newHWorld });
+    });
+    showActionToast(`Perspective fixed → ${outW}×${outH}`);
+  } catch (e) {
+    console.warn("perspective failed", e);
+    showActionToast(`Perspective failed: ${e.message || e}`, 5000);
+  }
+}
+
+document.getElementById("imgPerspective").addEventListener("click", () => {
+  const sel = scene.firstSelected();
+  if (!sel || sel.type !== "image") { showActionToast("Select an image first", 2500); return; }
+  enterPerspectiveMode(sel);
+});
+document.getElementById("perspApply").addEventListener("click", () => applyPerspective());
+document.getElementById("perspCancel").addEventListener("click", () => exitPerspectiveMode());
+
+// Enter / Esc 退 perspective mode
+window.addEventListener("keydown", (ev) => {
+  if (!_perspState) return;
+  const t = ev.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+  if (ev.key === "Enter") { ev.preventDefault(); applyPerspective(); }
+  else if (ev.key === "Escape") { ev.preventDefault(); exitPerspectiveMode(); }
 }, true);
 
 window.addEventListener("resize", () => renderOverlay());
