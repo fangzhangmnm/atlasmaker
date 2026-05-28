@@ -403,6 +403,7 @@
     <div id="chromaDialog" class="form-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="chromaTitle">
       <div class="form-head"><span id="chromaTitle">Remove background</span></div>
       <div class="form-body">
+        <div class="form-warn">Destructive — Apply bakes into the image (Ctrl+Z reverts).</div>
         <div class="form-row">
           <label for="chromaColor">Key color</label>
           <input id="chromaColor" type="color" value="#ffffff">
@@ -433,6 +434,7 @@
     <div id="levelsDialog" class="form-dialog hidden" role="dialog" aria-modal="true">
       <div class="form-head">Levels</div>
       <div class="form-body">
+        <div class="form-warn">Destructive — Apply bakes into the image (Ctrl+Z reverts).</div>
         <div class="chroma-preview-wrap">
           <canvas id="levelsPreview" class="chroma-preview"></canvas>
         </div>
@@ -453,6 +455,7 @@
     <div id="curvesDialog" class="form-dialog hidden" role="dialog" aria-modal="true">
       <div class="form-head">Curves (master)</div>
       <div class="form-body">
+        <div class="form-warn">Destructive — Apply bakes into the image (Ctrl+Z reverts).</div>
         <div class="chroma-preview-wrap">
           <canvas id="curvesPreview" class="chroma-preview"></canvas>
         </div>
@@ -475,6 +478,7 @@
     <div id="cbDialog" class="form-dialog hidden" role="dialog" aria-modal="true">
       <div class="form-head">Color Balance · midtones</div>
       <div class="form-body">
+        <div class="form-warn">Destructive — Apply bakes into the image (Ctrl+Z reverts).</div>
         <div class="chroma-preview-wrap">
           <canvas id="cbPreview" class="chroma-preview"></canvas>
         </div>
@@ -497,7 +501,7 @@
 
     <!-- Perspective 模式底部 toolbar -->
     <div id="perspToolbar" class="crop-toolbar hidden" role="toolbar" aria-label="Perspective fix">
-      <span class="crop-hint">Drag the 4 corners over the rectangle in the photo · Enter = apply</span>
+      <span class="crop-hint">Drag 4 corners over the photo's rectangle · Apply bakes into image · Ctrl+Z reverts</span>
       <label class="srow" style="flex:0 0 auto">
         <span class="srow-l" style="width:auto">W</span>
         <input id="perspW" type="number" min="1" max="16384" step="1" style="width:64px">

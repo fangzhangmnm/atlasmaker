@@ -27,7 +27,7 @@
   --danger: #c0392b;
   --void: #e6e2d6;
   --shadow: 0 6px 24px rgba(0, 0, 0, 0.08);
-  --radius: 12px;
+  --radius: 0;
 }
 
 :root[data-theme="night"] {
@@ -145,7 +145,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   height: 22px;
   background: rgba(60, 60, 60, 0.85)
     url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='5' y='11' width='14' height='10' rx='2'/><path d='M8 11V7a4 4 0 0 1 8 0v4'/></svg>") center / 14px no-repeat;
-  border-radius: 3px;
+  border-radius: 0;
   pointer-events: none;
 }
 .overlay-handle {
@@ -156,7 +156,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   margin-top: -6px;
   background: var(--bg);
   border: 2px solid var(--accent);
-  border-radius: 2px;
+  border-radius: 0;
   pointer-events: auto;
   cursor: nwse-resize;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
@@ -230,7 +230,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   background: var(--accent);
   color: #fff;
   font-size: 9px;
-  border-radius: 3px;
+  border-radius: 0;
   pointer-events: none;
   white-space: nowrap;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -252,7 +252,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   backdrop-filter: blur(16px) saturate(180%);
   -webkit-backdrop-filter: blur(16px) saturate(180%);
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: 0;
   box-shadow: var(--shadow);
   z-index: 10;
   max-width: calc(100% - 24px);
@@ -269,7 +269,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   background: transparent;
   color: var(--ink);
   font: inherit;
-  border-radius: 999px;
+  border-radius: 0;
   outline: none;
 }
 .session-name:hover { background: var(--bg-soft); }
@@ -280,7 +280,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
 .tool {
   width: 30px;
   height: 30px;
-  border-radius: 999px;
+  border-radius: 0;
   border: 1px solid transparent;
   background: transparent;
   color: var(--ink);
@@ -320,7 +320,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   gap: 4px;
   padding: 3px 8px;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: 0;
   background: var(--bg);
   color: var(--ink-soft);
   cursor: pointer;
@@ -358,7 +358,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   backdrop-filter: blur(16px) saturate(180%);
   -webkit-backdrop-filter: blur(16px) saturate(180%);
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: 0;
   color: var(--ink-soft);
   font-size: 11px;
   z-index: 10;
@@ -431,7 +431,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   font-size: 11px;
   padding: 2px 6px;
   border: 1px solid var(--line);
-  border-radius: 3px;
+  border-radius: 0;
   background: var(--bg);
   color: var(--ink);
   min-width: 0;
@@ -446,7 +446,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   border: 1px solid var(--line);
   background: var(--bg);
   color: var(--ink);
-  border-radius: 3px;
+  border-radius: 0;
   cursor: pointer;
   padding: 0;
   display: inline-flex;
@@ -472,7 +472,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   border: 1px solid var(--line);
   background: var(--bg);
   color: var(--ink);
-  border-radius: 3px;
+  border-radius: 0;
   cursor: pointer;
   padding: 0 8px;
   font-size: 11px;
@@ -592,7 +592,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   min-width: 0;
   padding: 3px 6px;
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: 0;
   background: var(--bg);
   color: var(--ink);
   font: inherit;
@@ -604,7 +604,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   border: 1px solid var(--accent);
   background: var(--accent);
   color: #fff;
-  border-radius: 6px;
+  border-radius: 0;
   cursor: pointer;
   font: inherit;
   font-size: 12px;
@@ -617,7 +617,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
 .lock-btn {
   width: 24px;
   height: 24px;
-  border-radius: 5px;
+  border-radius: 0;
   border: 1px solid var(--line);
   background: var(--bg);
   color: var(--ink);
@@ -647,7 +647,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   border: 1px solid var(--line);
   background: var(--bg);
   color: var(--ink);
-  border-radius: 6px;
+  border-radius: 0;
   cursor: pointer;
   font: inherit;
   text-align: center;
@@ -671,7 +671,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   padding: 8px 14px;
   background: var(--bg);
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: 0;
   box-shadow: var(--shadow);
   z-index: 30;
 }
@@ -680,7 +680,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   border: 0;
   background: var(--accent);
   color: #fff;
-  border-radius: 999px;
+  border-radius: 0;
   padding: 4px 10px;
   cursor: pointer;
 }
@@ -696,7 +696,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   min-width: 200px;
   background: var(--bg);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 0;
   box-shadow: var(--shadow);
   padding: 6px;
   z-index: 15;
@@ -716,7 +716,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   color: var(--ink);
   font: inherit;
   text-align: left;
-  border-radius: 6px;
+  border-radius: 0;
   cursor: pointer;
   white-space: nowrap;
 }
@@ -754,7 +754,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
 .gallery-back {
   background: transparent;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 0;
   font-size: 15px;
   width: 28px;
   height: 28px;
@@ -785,7 +785,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   padding: 4px 8px;
   background: var(--bg-soft);
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: 0;
   color: var(--ink);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
@@ -796,7 +796,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   padding: 4px 10px;
   background: var(--bg-soft);
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 0;
   color: var(--ink);
   font-size: 12px;
   cursor: pointer;
@@ -821,7 +821,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   background: transparent;
   color: var(--accent);
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: 0;
   font: inherit;
 }
 .sessions-breadcrumb button:hover { background: var(--bg-soft); }
@@ -874,7 +874,7 @@ body[data-mode="gallery"] .crop-toolbar { display: none !important; }
   flex-direction: column;
   background: var(--bg-soft);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 0;
   overflow: hidden;
   cursor: pointer;
   transition: border-color 0.12s, transform 0.12s;
@@ -936,7 +936,7 @@ body[data-mode="gallery"] .crop-toolbar { display: none !important; }
   border: 1px solid var(--line);
   background: var(--bg);
   color: var(--ink);
-  border-radius: 5px;
+  border-radius: 0;
   cursor: pointer;
   font-size: 11px;
 }
@@ -954,7 +954,7 @@ body[data-mode="gallery"] .crop-toolbar { display: none !important; }
 .session-row .badge {
   display: inline-block;
   padding: 1px 6px;
-  border-radius: 999px;
+  border-radius: 0;
   font-size: 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   background: var(--bg-soft);
@@ -1011,7 +1011,7 @@ body[data-mode="gallery"] .crop-toolbar { display: none !important; }
   font-size: 14px;
   background: var(--bg-soft);
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 0;
   color: var(--ink);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
@@ -1047,7 +1047,7 @@ body[data-mode="gallery"] .crop-toolbar { display: none !important; }
 .pw-actions button {
   padding: 6px 14px;
   font-size: 13px;
-  border-radius: 6px;
+  border-radius: 0;
   border: 1px solid var(--line);
   background: var(--bg-soft);
   color: var(--ink);
@@ -1176,7 +1176,7 @@ body[data-mode="gallery"] .crop-toolbar { display: none !important; }
   padding: 10px 16px;
   background: var(--bg);
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 0;
   box-shadow: var(--shadow);
   font-size: 13px;
 }
@@ -1187,7 +1187,7 @@ body[data-mode="gallery"] .crop-toolbar { display: none !important; }
 }
 .crop-toolbar button {
   padding: 6px 14px;
-  border-radius: 6px;
+  border-radius: 0;
   border: 1px solid var(--line);
   background: var(--bg-soft);
   color: var(--ink);
@@ -1209,14 +1209,16 @@ body[data-mode="gallery"] .crop-toolbar { display: none !important; }
   transform: translate(-50%, -50%);
   width: 92vw;
   max-width: 380px;
+  max-height: calc(100vh - 32px); /* 小屏 / 内容多时 → body 滚条 */
   background: var(--bg);
   border: 1px solid var(--line);
-  border-radius: var(--radius);
   box-shadow: var(--shadow);
   z-index: 56;
   display: flex;
   flex-direction: column;
 }
+.form-head, .form-actions { flex: 0 0 auto; }
+.form-body { overflow-y: auto; flex: 1 1 auto; min-height: 0; }
 .form-dialog.hidden { display: none; }
 .form-head {
   padding: 10px 14px;
@@ -1248,7 +1250,7 @@ body[data-mode="gallery"] .crop-toolbar { display: none !important; }
   font-size: 12px;
   background: var(--bg-soft);
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: 0;
   color: var(--ink);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   min-width: 0;
@@ -1268,6 +1270,14 @@ body[data-mode="gallery"] .crop-toolbar { display: none !important; }
   color: var(--ink-soft);
   padding: 2px 0;
 }
+.form-warn {
+  font-size: 10.5px;
+  color: var(--danger);
+  padding: 4px 8px;
+  border: 1px solid var(--danger);
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+  line-height: 1.4;
+}
 .form-actions {
   padding: 8px 14px 10px;
   display: flex;
@@ -1277,7 +1287,7 @@ body[data-mode="gallery"] .crop-toolbar { display: none !important; }
 .form-actions button {
   padding: 4px 12px;
   font-size: 12px;
-  border-radius: 5px;
+  border-radius: 0;
   border: 1px solid var(--line);
   background: var(--bg-soft);
   color: var(--ink);
@@ -1308,7 +1318,7 @@ body[data-mode="gallery"] .crop-toolbar { display: none !important; }
   background-size: 16px 16px;
   background-position: 0 0, 0 8px, 8px -8px, -8px 0;
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: 0;
   image-rendering: pixelated;
 }
 /* Curves modal 里的曲线 graph */
@@ -1317,11 +1327,11 @@ body[data-mode="gallery"] .crop-toolbar { display: none !important; }
   margin: 4px auto;
   background: var(--bg-soft);
   border: 1px solid var(--line);
-  border-radius: 3px;
+  border-radius: 0;
 }
 .form-mini-btn {
   padding: 4px 10px;
-  border-radius: 6px;
+  border-radius: 0;
   border: 1px solid var(--line);
   background: var(--bg-soft);
   cursor: pointer;
