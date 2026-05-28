@@ -112,12 +112,12 @@ importInput.addEventListener("change", () => {
 // 不走 debounce/heartbeat/trivial-skip 那套（参 webxiaoheiwu sync-design）——
 // AtlasMaker 用 Blender 习惯，频繁自动保存反而带来不稳定。
 const sessionInput = document.getElementById("sessionName");
-const saveStatusEl = document.getElementById("saveStatus");
 const AUTO_SAVE_FALLBACK_MS = 3 * 60 * 1000;
 
 let _dirty = false;
 let _saving = false;
 let _loading = false;
+let _cloudPushing = false; // cloud push 在跑（独立 _saving，因为云推是 save 后期；冷启 / 单纯 push 也会动）
 
 function applySessionTitle() {
   // 标题永远是固定的 "AtlasMaker"。理由：
@@ -137,23 +137,89 @@ function onSessionNameChanged() {
   if (typeof refreshCloudUI === "function") refreshCloudUI();
 }
 
-function setSaveStatus(state) {
-  if (!saveStatusEl) return;
-  saveStatusEl.dataset.state = state;
-  const label = ({
-    dirty:  "Unsaved",
-    saving: "Saving…",
-    saved:  "Saved",
-    error:  "Save failed",
-  })[state] || "";
-  saveStatusEl.textContent = _currentEncrypted ? `${label} 🔒` : label;
+// === Save 按钮多态 ===
+// 状态：cloud-busy / saving / dirty / cloud-dirty / synced / local-only / error
+// 永远点 = saveCurrentSession({explicit:true})（同 Ctrl+S）。saving / cloud-busy disabled。
+// 替代之前的 saveStatus pill。
+const _stroke = 'fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"';
+const ICON_DISK = `<svg viewBox="0 0 24 24" ${_stroke} aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>`;
+const ICON_DISK_DIRTY = `<svg viewBox="0 0 24 24" ${_stroke} aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/><circle cx="19" cy="6" r="3" fill="currentColor" stroke="none"/></svg>`;
+const ICON_CLOUD_UPLOAD = `<svg viewBox="0 0 24 24" ${_stroke} aria-hidden="true"><path d="M18 10h-1.3A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/><polyline points="8 13 12 9 16 13"/><line x1="12" y1="9" x2="12" y2="17"/></svg>`;
+const ICON_CLOUD_BUSY = `<svg viewBox="0 0 24 24" ${_stroke} aria-hidden="true"><path d="M18 10h-1.3A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/><g class="spin-arc" style="transform-origin: 12px 14px"><path d="M9 14a3 3 0 0 1 5.5-1.6"/><polyline points="14.5 11.4 14.5 13.4 12.6 13.4"/></g></svg>`;
+const ICON_CLOUD_CHECK = `<svg viewBox="0 0 24 24" ${_stroke} aria-hidden="true"><path d="M18 10h-1.3A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/><polyline points="9 13 11 15 15 11"/></svg>`;
+const ICON_LOCK_BADGE = ' (encrypted)';
+const ICON_LOCK_OPEN = `<svg viewBox="0 0 24 24" ${_stroke} aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.7-1.5"/></svg>`;
+const ICON_LOCK_CLOSED = `<svg viewBox="0 0 24 24" ${_stroke} aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>`;
+const ICON_FOLDER = `<svg viewBox="0 0 24 24" ${_stroke} aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>`;
+const ICON_CLOUD_ONLY = `<svg viewBox="0 0 24 24" ${_stroke} aria-hidden="true"><path d="M18 10h-1.3A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>`;
+const ICON_LOCK_THUMB = `<svg viewBox="0 0 24 24" ${_stroke} aria-hidden="true"><rect x="6" y="11" width="12" height="9" rx="2"/><path d="M9 11V7a3 3 0 0 1 6 0v4"/></svg>`;
+
+let _lastSaveError = null;
+function computeSaveState() {
+  if (_cloudPushing) return "cloud-busy";
+  if (_saving) return "saving";
+  if (_lastSaveError) return "error";
+  if (_dirty) return "dirty";
+  const signed = cloud.isAuthConfigured && cloud.isAuthConfigured() && cloud.isSignedIn && cloud.isSignedIn();
+  if (signed && cloud.isCloudDirty(sessionInput.value)) return "cloud-dirty";
+  if (signed) return "synced";
+  return "local-only";
+}
+
+const cloudPushBtn = document.getElementById("cloudPushBtn");
+function updateSaveBtnState() {
+  if (!cloudPushBtn) return;
+  const state = computeSaveState();
+  cloudPushBtn.dataset.state = state;
+  const name = sessionInput.value || "Untitled";
+  const enc = _currentEncrypted ? ICON_LOCK_BADGE : "";
+  let html, title, disabled;
+  switch (state) {
+    case "cloud-busy":
+      html = ICON_CLOUD_BUSY;
+      title = `Saving to cloud… · ${name}${enc}`;
+      disabled = true;
+      break;
+    case "saving":
+      html = ICON_DISK;
+      title = `Saving… · ${name}${enc}`;
+      disabled = true;
+      break;
+    case "error":
+      html = ICON_DISK_DIRTY;
+      title = `Save failed — click to retry · ${name}${enc}`;
+      disabled = false;
+      break;
+    case "dirty":
+      html = ICON_DISK_DIRTY;
+      title = `Save (Ctrl+S) · ${name}${enc} · unsaved`;
+      disabled = false;
+      break;
+    case "cloud-dirty":
+      html = ICON_CLOUD_UPLOAD;
+      title = `Push to cloud (Ctrl+S) · ${name}${enc} · local ahead of cloud`;
+      disabled = false;
+      break;
+    case "synced":
+      html = ICON_CLOUD_CHECK;
+      title = `Synced to cloud · ${name}${enc}`;
+      disabled = false;
+      break;
+    default: // local-only
+      html = ICON_DISK;
+      title = `Saved locally · ${name}${enc} · sign in to OneDrive to back up`;
+      disabled = false;
+  }
+  cloudPushBtn.innerHTML = html;
+  cloudPushBtn.title = title;
+  cloudPushBtn.disabled = disabled;
 }
 
 function markDirty() {
   if (_loading) return;
   if (!_dirty) {
     _dirty = true;
-    setSaveStatus("dirty");
+    updateSaveBtnState();
   }
 }
 
@@ -423,6 +489,125 @@ async function confirmTypePhrase(phrase, message) {
   return await _pwDialog({ mode: "typePhrase", title: "Confirm", message, expectedPhrase: phrase, okLabel: "Confirm" });
 }
 
+// === 通用 input sheet（rename / new board / etc）===
+// validate(value) → null = OK，string = 错误信息（inline 显示，不关 sheet，让用户改）
+// 返回 trim 后的字符串 / null（取消）
+const _isEls = {
+  backdrop: document.getElementById("inputBackdrop"),
+  dialog: document.getElementById("inputDialog"),
+  title: document.getElementById("inputTitle"),
+  message: document.getElementById("inputMessage"),
+  field: document.getElementById("inputField"),
+  error: document.getElementById("inputError"),
+  cancel: document.getElementById("inputCancel"),
+  ok: document.getElementById("inputOk"),
+};
+let _isActiveResolve = null;
+function _closeInputSheet(value) {
+  _isEls.dialog.classList.add("hidden");
+  _isEls.backdrop.classList.add("hidden");
+  _isEls.field.value = "";
+  _isEls.error.textContent = "";
+  const r = _isActiveResolve;
+  _isActiveResolve = null;
+  if (r) r(value);
+}
+_isEls.cancel.addEventListener("click", () => _closeInputSheet(null));
+_isEls.backdrop.addEventListener("click", () => _closeInputSheet(null));
+
+async function openInputSheet({ title, message = "", initial = "", placeholder = "", okLabel = "OK", validate = null }) {
+  return new Promise((resolve) => {
+    if (_isActiveResolve) { _closeInputSheet(null); }
+    _isActiveResolve = resolve;
+    _isEls.title.textContent = title;
+    _isEls.message.textContent = message;
+    _isEls.message.style.display = message ? "" : "none";
+    _isEls.field.value = initial;
+    _isEls.field.placeholder = placeholder;
+    _isEls.ok.textContent = okLabel;
+    _isEls.error.textContent = "";
+    _isEls.backdrop.classList.remove("hidden");
+    _isEls.dialog.classList.remove("hidden");
+    setTimeout(() => { _isEls.field.focus(); _isEls.field.select(); }, 0);
+
+    const submit = async () => {
+      const v = _isEls.field.value.trim();
+      if (!v) { _isEls.error.textContent = "Required"; return; }
+      if (validate) {
+        const err = await validate(v);
+        if (err) { _isEls.error.textContent = err; return; }
+      }
+      _closeInputSheet(v);
+    };
+    const onKey = (e) => {
+      if (e.key === "Enter") { e.preventDefault(); submit(); }
+      else if (e.key === "Escape") { e.preventDefault(); _closeInputSheet(null); }
+    };
+    const okClick = () => submit();
+    _isEls.ok.addEventListener("click", okClick);
+    _isEls.field.addEventListener("keydown", onKey);
+    const cleanup = (val) => {
+      _isEls.ok.removeEventListener("click", okClick);
+      _isEls.field.removeEventListener("keydown", onKey);
+      resolve(val);
+    };
+    _isActiveResolve = cleanup;
+  });
+}
+
+// === Rename current board ===
+// 入口：汉堡菜单「Rename current board…」+ 412 冲突自动弹。
+// 同名循环：本地已有同名 → 提示换个名 → loop until 唯一 / 取消。
+// 数据安全：rename = saveSession(newName) + deleteSession(oldName)，oldName 走 _activeIDBPath（actually-loaded，避开 ghost current path 陷阱 0.7.2）。
+async function renameCurrentBoard({ suggested, reason } = {}) {
+  const oldPath = _activeIDBPath;
+  const oldStem = stemOfPath(oldPath);
+  let candidate = suggested || oldStem;
+  while (true) {
+    const title = reason ? `Rename (${reason})` : "Rename current board";
+    const msg = reason ? `Cloud has a newer "${oldStem}". Choose a new name to save your version as.` : "";
+    const newStem = await openInputSheet({
+      title, message: msg, initial: candidate,
+      placeholder: "Board name (use / for subfolders)",
+      okLabel: "Rename",
+      validate: async (v) => {
+        if (v === oldStem) return null; // 没改名也算 OK
+        const newPath = sessionFileName(v);
+        try {
+          const existing = await storage.getSession(newPath);
+          if (existing) return `"${v}" already exists locally — pick another`;
+        } catch (_) {}
+        return null;
+      },
+    });
+    if (newStem === null) return null;
+    if (newStem === oldStem) return oldStem;
+    // 改 sessionInput → 触发 input 事件 → markDirty + onSessionNameChanged。然后 explicit save。
+    sessionInput.value = newStem;
+    applySessionTitle();
+    if (cloud.isAuthConfigured() && cloud.isSignedIn()) {
+      cloud.setCloudDirty(newStem, true);
+    }
+    markDirty(); // 让 save 真跑（_dirty=true）
+    refreshCloudUI();
+    // 保存：local + cloud（用户在场显式 rename + push）
+    await saveCurrentSession({ explicit: true });
+    return newStem;
+  }
+}
+
+// 412 冲突回调：自动弹 rename sheet。用户给名 → setCloudDirty(新名) → drain 一次推
+async function handleCloudConflictRename(conflictName) {
+  const newName = await renameCurrentBoard({
+    suggested: conflictName + " (new)",
+    reason: "cloud conflict",
+  });
+  // renameCurrentBoard 内部已经 saveCurrentSession 续推了，这里不用再 push
+  if (!newName) {
+    showActionToast(`Saved locally — OneDrive has a newer "${conflictName}". Click save again after renaming.`, 6000);
+  }
+}
+
 // 保存 = 本地 IDB（atomic）；explicit=true 时**额外**触发云推（用户在场 = 能看见 toast 和 412 提示）。
 // autosave / 3-min / visibility 仍走 explicit=false → 绝不触云（用户没在场，412 sibling 会失踪）。
 // Ctrl+Shift+S 走 explicit=true + skipCloud=true：用户明确「只存本地」，跳过云、但给个 toast 确认。
@@ -461,10 +646,8 @@ async function saveCurrentSession({ explicit = false, skipCloud = false } = {}) 
   }
   _saving = true;
   _inFlightExplicit = explicit;
-  setSaveStatus("saving");
-  if (explicit && cloud.isAuthConfigured() && cloud.isSignedIn()) {
-    cloudPushBtn.disabled = true;
-  }
+  _lastSaveError = null;
+  updateSaveBtnState();
   try {
     // === 本地 IDB ===
     let localErr = null;
@@ -489,15 +672,13 @@ async function saveCurrentSession({ explicit = false, skipCloud = false } = {}) 
       _activeIDBPath = newPath;
       setCurrentPath(newPath);
       _dirty = false;
-      setSaveStatus("saved");
       if (cloud.isAuthConfigured() && cloud.isSignedIn()) {
         cloud.setCloudDirty(doc.name, true);
-        refreshCloudUI();
       }
     } catch (e) {
       localErr = e;
+      _lastSaveError = e;
       console.warn("save failed", e);
-      setSaveStatus("error");
     }
     if (localErr) {
       if (explicit) showActionToast(`Save failed: ${localErr.message || localErr}`, 5000);
@@ -515,7 +696,8 @@ async function saveCurrentSession({ explicit = false, skipCloud = false } = {}) 
 
     // === 云推 ===
     let pushOutcome = null;
-    cloudPushBtn.dataset.state = "cloud-busy"; // 旋转弧动画（CSS）
+    _cloudPushing = true;
+    updateSaveBtnState();
     try {
       const name = savedDoc.name;
       const newCloudPath = pathFromInput();
@@ -530,7 +712,6 @@ async function saveCurrentSession({ explicit = false, skipCloud = false } = {}) 
         _activeCloudPath = newCloudPath;
         pushOutcome = { action: "uploaded", renamedFrom };
       }
-      refreshCloudUI();
     } catch (e) {
       if (e instanceof cloud.CloudConflictError) {
         pushOutcome = { conflict: true, sessionName: e.sessionName };
@@ -538,13 +719,14 @@ async function saveCurrentSession({ explicit = false, skipCloud = false } = {}) 
         pushOutcome = { error: e.message || String(e) };
       }
     } finally {
-      delete cloudPushBtn.dataset.state;
+      _cloudPushing = false;
     }
 
     if (pushOutcome?.error) {
       showActionToast(`Saved locally (cloud push failed: ${pushOutcome.error})`, 5000);
     } else if (pushOutcome?.conflict) {
-      showActionToast(`Saved locally — OneDrive has a newer "${pushOutcome.sessionName}". Rename your board and Ctrl+S again.`, 8000);
+      // 412 冲突 → 自动弹 rename sheet（不再只 toast）
+      await handleCloudConflictRename(pushOutcome.sessionName);
     } else if (pushOutcome?.action === "uploaded") {
       showActionToast(pushOutcome.renamedFrom
         ? `Saved (local + cloud, deleted old ${pushOutcome.renamedFrom})`
@@ -554,7 +736,8 @@ async function saveCurrentSession({ explicit = false, skipCloud = false } = {}) 
     _saving = false;
     const wasExplicit = _inFlightExplicit;
     _inFlightExplicit = false;
-    cloudPushBtn.disabled = !cloud.isSignedIn();
+    updateSaveBtnState();
+    refreshCloudUI();
     // Drain 条件：
     //   (a) 保存期间真改了 (_dirty 复活)
     //   (b) 或：in-flight 非 explicit，但 pending 是 explicit
@@ -672,7 +855,7 @@ async function loadCurrentSession() {
   try {
     await applyAtlasZipBlob(pkg.atlas);
     _dirty = false;
-    setSaveStatus("saved");
+    updateSaveBtnState();
     return true;
   } finally {
     _loading = false;
@@ -696,7 +879,7 @@ async function openSessionByPath(path) {
   _activeIDBPath = path;
   _activeCloudPath = path; // 假设云上同名（不存在的话 deleteAtlas 是 no-op）
   _dirty = false;
-  setSaveStatus("saved");
+  updateSaveBtnState();
   refreshCloudUI();
 }
 
@@ -870,7 +1053,7 @@ function refreshPanels() {
     vpInterp.value = sel.interp || "linear";
     vpBinding.value = sel.binding || "";
     vpLock.setAttribute("aria-pressed", sel.locked ? "true" : "false");
-    vpLock.textContent = sel.locked ? "🔒" : "🔓";
+    vpLock.innerHTML = sel.locked ? ICON_LOCK_CLOSED : ICON_LOCK_OPEN;
   } else if (sel && sel.type === "image") {
     imgPanel.classList.remove("hidden");
     vpPanel.classList.add("hidden");
@@ -879,7 +1062,7 @@ function refreshPanels() {
     const cropStr = sel.crop ? ` (cropped ${Math.round(sel.crop.w)}×${Math.round(sel.crop.h)})` : "";
     imgNaturalLabel.textContent = `${sel.naturalW}×${sel.naturalH}${cropStr} · ${sizeStr}`;
     imgLock.setAttribute("aria-pressed", sel.locked ? "true" : "false");
-    imgLock.textContent = sel.locked ? "🔒" : "🔓";
+    imgLock.innerHTML = sel.locked ? ICON_LOCK_CLOSED : ICON_LOCK_OPEN;
     imgInterp.value = sel.interp || "linear";
     // Reset crop 只在有 crop 时显示（用 disabled，避免按钮位置跳）
     const resetBtn = document.getElementById("imgResetCrop");
@@ -1751,12 +1934,8 @@ const cloudPushBtn = document.getElementById("cloudPushBtn");
 
 function refreshCloudUI() {
   const signedIn = cloud.isSignedIn();
-  cloudPushBtn.disabled = !signedIn;
-  // 云端待推：登录中 + 本地比云端新 → push 按钮闪小点（独立于本地保存状态）
-  const dirty = signedIn && cloud.isCloudDirty(sessionInput.value);
-  cloudPushBtn.classList.toggle("cloud-dirty", dirty);
-  if (dirty) cloudPushBtn.title = "Save to cloud — local has un-uploaded changes (Ctrl+S also saves to cloud)";
-  else cloudPushBtn.title = "Save to cloud (Ctrl+S also saves to cloud)";
+  // save 按钮 disabled / icon / title 都由 updateSaveBtnState 统一管 —— 这里不再 touch
+  updateSaveBtnState();
   if (!cloud.isAuthConfigured()) {
     cloudPill.dataset.state = "disconnected";
     cloudLabel.textContent = "OneDrive not configured";
@@ -1893,7 +2072,7 @@ if ("serviceWorker" in navigator && !LOCAL_DEV_HOSTS.has(location.hostname)) {
 
 refreshHud();
 renderOverlay();
-setSaveStatus("saved");
+updateSaveBtnState();
 
 // 启动时尝试从 IDB 恢复上次 session
 loadCurrentSession().then((ok) => {
@@ -2205,7 +2384,7 @@ async function refreshSessionsList() {
     row.className = "session-row folder";
     const thumb = document.createElement("div");
     thumb.className = "thumb";
-    thumb.textContent = "📁";
+    thumb.innerHTML = ICON_FOLDER;
     row.appendChild(thumb);
     const body = document.createElement("div");
     body.className = "body";
@@ -2240,9 +2419,9 @@ function renderSessionFileRow(key, { pkg, inLocal, inCloud, isCurrent }) {
   const thumb = document.createElement("div");
   thumb.className = "thumb" + (isEncrypted ? " locked" : "");
   if (isEncrypted) {
-    thumb.textContent = "🔒";
+    thumb.innerHTML = ICON_LOCK_THUMB;
   } else if (!inLocal && inCloud) {
-    thumb.textContent = "☁";
+    thumb.innerHTML = ICON_CLOUD_ONLY;
   } else if (pkg && pkg.thumb) {
     const url = URL.createObjectURL(pkg.thumb);
     _galleryThumbUrls.push(url);
@@ -2277,10 +2456,10 @@ function renderSessionFileRow(key, { pkg, inLocal, inCloud, isCurrent }) {
     const b = document.createElement("span"); b.className = "badge local"; b.textContent = "Local"; badges.appendChild(b);
   }
   if (inCloud) {
-    const b = document.createElement("span"); b.className = "badge cloud"; b.textContent = "☁ Cloud"; badges.appendChild(b);
+    const b = document.createElement("span"); b.className = "badge cloud"; b.textContent = "Cloud"; badges.appendChild(b);
   }
   if (isEncrypted) {
-    const b = document.createElement("span"); b.className = "badge encrypted"; b.textContent = "🔒 Encrypted"; badges.appendChild(b);
+    const b = document.createElement("span"); b.className = "badge encrypted"; b.textContent = "Encrypted"; badges.appendChild(b);
   }
   if (inLocal && cloud.isAuthConfigured() && cloud.isSignedIn()) {
     const stem = stemOfPath(key);
@@ -2298,7 +2477,7 @@ function renderSessionFileRow(key, { pkg, inLocal, inCloud, isCurrent }) {
 
   if (inLocal) {
     const cryptBtn = document.createElement("button");
-    cryptBtn.textContent = isEncrypted ? "🔓 Decrypt" : "🔒 Encrypt";
+    cryptBtn.textContent = isEncrypted ? "Decrypt" : "Encrypt";
     cryptBtn.title = isEncrypted ? "Remove encryption (requires current password + strong consent)" : "Encrypt (set a new password)";
     cryptBtn.addEventListener("click", async (e) => {
       e.stopPropagation();
@@ -2307,6 +2486,49 @@ function renderSessionFileRow(key, { pkg, inLocal, inCloud, isCurrent }) {
       await refreshSessionsList();
     });
     actions.appendChild(cryptBtn);
+  }
+
+  // 单独推送这一幅（局部 push，不影响 active doc）。条件：本地有 + 登录中 + 云未同步
+  if (inLocal && pkg?.atlas && cloud.isAuthConfigured() && cloud.isSignedIn() && cloud.isCloudDirty(stemOfPath(key))) {
+    const pushBtn = document.createElement("button");
+    pushBtn.textContent = "Push";
+    pushBtn.title = "Push this board to OneDrive (independent of current doc)";
+    pushBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      pushBtn.disabled = true;
+      pushBtn.textContent = "Pushing…";
+      try {
+        await cloud.pushAtlas(stemOfPath(key), pkg.atlas);
+        showActionToast(`Pushed: ${stemOfPath(key)}`);
+        await refreshSessionsList();
+      } catch (err) {
+        if (err instanceof cloud.CloudConflictError) {
+          showActionToast(`Cloud has a newer "${stemOfPath(key)}" — rename (open it first, then Rename) to push.`, 6000);
+        } else {
+          showActionToast(`Push failed: ${err.message || err}`, 4000);
+        }
+      } finally {
+        pushBtn.disabled = false;
+        pushBtn.textContent = "Push";
+      }
+    });
+    actions.appendChild(pushBtn);
+  }
+
+  // 卸载本地（弱删除）：本地+云时可见。清本地 IDB，云端保留；下次单击 tile 重新拉。
+  if (inLocal && inCloud && !isCurrent) {
+    const unloadBtn = document.createElement("button");
+    unloadBtn.textContent = "Unload local";
+    unloadBtn.title = "Drop the local copy; cloud copy stays (click tile to fetch back)";
+    unloadBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      try { await storage.deleteSession(key); }
+      catch (err) { showActionToast(`Unload failed: ${err.message || err}`); return; }
+      showActionToast(`Unloaded local: ${stemOfPath(key)}`);
+      await refreshSessionsList();
+      updateIdbUsageFooter();
+    });
+    actions.appendChild(unloadBtn);
   }
 
   const delBtn = document.createElement("button");
@@ -2384,11 +2606,32 @@ async function pullSessionFromCloudAndOpen(path) {
 }
 
 async function openSessionsModal() {
-  // 打开前 flush 一下，让当前 session 出现在列表里且 thumb 最新
+  // 打开前 flush 一下，让当前 session 出现在列表里且 thumb 最新（autosave 力度，不触云）
   if (_dirty && !_saving) await saveCurrentSession();
   await refreshSessionsList();
   galleryCurrentName.value = sessionInput.value;
   sessionsGallery.classList.remove("hidden");
+  document.body.dataset.mode = "gallery"; // CSS disable 主画布 / 浮窗
+  updateIdbUsageFooter();
+}
+
+// IDB 占用 = Σ atlas.size。**不**走 navigator.storage.estimate（会算上 SW cache / localStorage，
+// 虚高几 MB，对用户误导）。参考 WebPaint sync-and-ui-shareback §5。
+async function updateIdbUsageFooter() {
+  const el = document.getElementById("galleryFooter");
+  if (!el) return;
+  try {
+    const keys = await storage.listSessionIds();
+    let total = 0;
+    let n = 0;
+    for (const k of keys) {
+      const pkg = await storage.getSession(k).catch(() => null);
+      if (pkg?.atlas) { total += pkg.atlas.size; n++; }
+    }
+    el.textContent = `Local: ${formatBytes(total)} (${n} board${n === 1 ? "" : "s"})`;
+  } catch (e) {
+    el.textContent = "Local: —";
+  }
 }
 
 // ----- 加密 toggle（per-session）-----
@@ -2471,8 +2714,11 @@ async function decryptSessionToggle(path, pkg) {
   }
   showActionToast(`Decrypted: ${stemOfPath(path)}`);
 }
-function closeSessionsModal() {
+async function closeSessionsModal() {
+  // 退图库也兜底 saveNow（autosave 力度，不触云）。用户在编辑中跑别处看图库回来，落盘一次。
+  if (_dirty && !_saving) await saveCurrentSession();
   sessionsGallery.classList.add("hidden");
+  delete document.body.dataset.mode;
   _revokeGalleryThumbs();
 }
 
@@ -2487,6 +2733,7 @@ galleryCurrentName.addEventListener("input", () => {
 });
 
 document.getElementById("menuSessions").addEventListener("click", () => { closeHamburger(); openSessionsModal(); });
+document.getElementById("menuRename").addEventListener("click", () => { closeHamburger(); renameCurrentBoard(); });
 document.getElementById("sessionsCloseBtn").addEventListener("click", closeSessionsModal);
 document.getElementById("sessionsRefreshBtn").addEventListener("click", refreshSessionsList);
 document.getElementById("sessionsNewBtn").addEventListener("click", async () => {

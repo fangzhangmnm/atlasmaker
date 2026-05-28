@@ -1,5 +1,19 @@
 /* AtlasMaker — 米色 / 夜黑，跟兄弟项目同色板。
-   board = 全屏容器；world = 受 pan/zoom transform 影响的「世界图层」。 */
+   board = 全屏容器；world = 受 pan/zoom transform 影响的「世界图层」。
+
+   Z-index 表（统一标准，跟 WebPaint sync-and-ui-shareback §5 对齐）：
+     5   marquee-select（在 board 内的选择框）
+     10  top-bar / HUD
+     15  float-panel（image / viewport 属性浮窗）
+     20  dropdown-menu（hamburger）/ crop-toolbar
+     30  toast（actionToast / updateToast）
+     50  sessions-gallery（全屏模态，覆盖主画布）
+     55  any backdrop（password / form / rename 这类 sheet 的背后蒙层）
+     56  any sheet / dialog（password / form / rename 卡片自身；> 50 让 gallery 内也能弹）
+     60  busy-overlay（最顶层，锁 UI；高于一切）
+
+   规矩：新增浮层先决定属于哪一档，不要发明新数字。
+   注意：sheet/backdrop 故意走 55/56 (不是 40/41)，是为了让 gallery 内（z=50）也能弹 sheet。 */
 
 :root {
   --bg: #f6f4ef;
@@ -247,17 +261,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
 .session-name:hover { background: var(--bg-soft); }
 .session-name:focus { background: var(--bg); border-color: var(--line); }
 
-.save-status {
-  font-size: 11px;
-  color: var(--ink-soft);
-  padding: 0 6px;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-.save-status[data-state="dirty"]  { color: var(--ink-soft); }
-.save-status[data-state="saving"] { color: var(--accent); }
-.save-status[data-state="saved"]  { color: var(--ink-soft); opacity: 0.6; }
-.save-status[data-state="error"]  { color: var(--danger); }
+/* .save-status pill 已移除（0.10）—— 状态全部由 #cloudPushBtn 多态承载 */
 
 .tool {
   width: 36px;
@@ -273,35 +277,18 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   transition: background 0.1s ease;
 }
 .tool:hover { background: var(--bg-soft); }
-/* 云上传按钮的「云端待推」小点：本地新于云端时右上角亮 */
-.tool.cloud-dirty {
-  position: relative;
-}
-.tool.cloud-dirty::after {
-  content: "";
-  position: absolute;
-  top: 3px;
-  right: 3px;
-  width: 8px;
-  height: 8px;
-  background: var(--accent);
-  border-radius: 50%;
-  border: 1.5px solid var(--bg);
-  pointer-events: none;
-  animation: cloud-dirty-pulse 2s ease-in-out infinite;
-}
-@keyframes cloud-dirty-pulse {
-  0%, 100% { opacity: 1; }
-  50%      { opacity: 0.45; }
-}
-/* cloud-busy 状态：把 cloud + up-arrow 换成 cloud + 旋转弧。
-   .cloud-arrow / .spin-arc 都在按钮 SVG 里写死，CSS 切换显示 + 转 */
-#cloudPushBtn .spin-arc { display: none; }
-#cloudPushBtn[data-state="cloud-busy"] .cloud-arrow { display: none; }
+
+/* Save 按钮多态视觉（#cloudPushBtn 上 data-state） */
+#cloudPushBtn[data-state="saving"]     { opacity: 0.5; }
+#cloudPushBtn[data-state="dirty"]      { color: var(--accent); }
+#cloudPushBtn[data-state="error"]      { color: var(--danger); }
+#cloudPushBtn[data-state="cloud-dirty"]{ color: #d49100; }
+#cloudPushBtn[data-state="cloud-busy"] { color: #d49100; }
+#cloudPushBtn[data-state="synced"]     { color: var(--ink-soft); }
+#cloudPushBtn[data-state="local-only"] { color: var(--ink-soft); }
+/* cloud-busy：SVG 内 .spin-arc 元素自旋。其它状态没有 .spin-arc 就静态 */
 #cloudPushBtn[data-state="cloud-busy"] .spin-arc {
-  display: inline;
   animation: am-cloud-spin 1s linear infinite;
-  color: var(--accent);
 }
 @keyframes am-cloud-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 .tool[aria-pressed="true"] {
@@ -448,7 +435,12 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   cursor: pointer;
   font-size: 14px;
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
+.lock-btn svg { width: 16px; height: 16px; }
+.pw-field .pw-show svg { width: 18px; height: 18px; vertical-align: middle; }
 .lock-btn[aria-pressed="true"] {
   background: var(--accent-soft);
   border-color: var(--accent);
@@ -548,7 +540,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.45);
-  z-index: 40;
+  z-index: 55;
 }
 .backdrop.hidden { display: none; }
 
@@ -557,7 +549,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   position: fixed;
   inset: 0;
   background: var(--bg);
-  z-index: 60;
+  z-index: 50;
   display: flex;
   flex-direction: column;
 }
@@ -652,6 +644,22 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
 .sessions-breadcrumb button.current:hover { background: transparent; }
 .sessions-breadcrumb .sep { color: var(--ink-soft); }
 
+.gallery-footer {
+  padding: 8px 16px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--ink-soft);
+  text-align: center;
+  flex: 0 0 auto;
+}
+
+/* body[data-mode="gallery"] 期间 disable 主画布 UI */
+body[data-mode="gallery"] .top-bar,
+body[data-mode="gallery"] .hud,
+body[data-mode="gallery"] .float-panel,
+body[data-mode="gallery"] .dropdown-menu,
+body[data-mode="gallery"] .crop-toolbar { display: none !important; }
+
 /* Tile grid（替代旧的 vertical list；空气更足，多列） */
 .sessions-grid {
   overflow-y: auto;
@@ -699,8 +707,13 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 56px;
   color: var(--ink-soft);
+}
+.session-row .thumb.locked svg,
+.session-row.folder .thumb svg,
+.session-row.cloud-only .thumb svg {
+  width: 56px;
+  height: 56px;
 }
 .session-row.folder .thumb { color: var(--accent); }
 .session-row .body {
@@ -776,7 +789,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   border: 1px solid var(--line);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  z-index: 80; /* 低于 busy(90)，高于 sessions(41) */
+  z-index: 56;
   display: flex;
   flex-direction: column;
 }
@@ -936,7 +949,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   bottom: 28px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 50;
+  z-index: 20;
   display: flex;
   gap: 10px;
   align-items: center;
@@ -980,7 +993,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   border: 1px solid var(--line);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  z-index: 80;
+  z-index: 56;
   display: flex;
   flex-direction: column;
 }
@@ -1063,7 +1076,7 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
 .busy-overlay {
   position: fixed;
   inset: 0;
-  z-index: 90;
+  z-index: 60;
   background: rgba(0, 0, 0, 0.55);
   display: flex;
   align-items: center;

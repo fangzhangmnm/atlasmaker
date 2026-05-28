@@ -181,6 +181,13 @@ AtlasMaker 没做（小到不必要）：
 ## 改动 / 待办（cross-link 到 version.js）
 
 - 0.9.11 — Coalesce v1，drain 条件 = _dirty
-- 0.9.12 (this bump) — Coalesce v2 补「in-flight 非 explicit + pending explicit」漏；cloud-busy 旋转动画
-- 0.10 — Save 按钮 5 态整合；汉堡 Rename sheet + 412 auto-prompt；gallery 进退 saveNow；per-tile push / unload；底栏 IDB 占用
-- 后续 — z-index 重新整理
+- 0.9.12 — Coalesce v2 补「in-flight 非 explicit + pending explicit」漏；cloud-busy 旋转动画
+- 0.10.0 — **大对账**：
+  - z-index 全局重整（doc 在 styles.css 顶）：5/10/15/20/30/50/55/56/60，对齐 WebPaint
+  - Save 按钮 5+ 态（cloud-busy / saving / dirty / error / cloud-dirty / synced / local-only），SVG icon 按状态切换，dirty 蓝点 + synced 灰云对勾 + 旋转弧；移除 #saveStatus pill
+  - 通用 openInputSheet 抽出（rename / new board / 未来其它）
+  - 汉堡 「Rename current board…」+ 412 冲突自动弹 rename sheet，同名循环检查 + setCloudDirty 续推
+  - Gallery 进 / 退都 saveNow；body[data-mode="gallery"] disable 主画布 UI；底栏 IDB 占用（`Σ atlas.size`，不走 storage.estimate）
+  - per-tile **Push**（独立推这一幅，不影响 active doc）+ **Unload local**（弱删除：清本地保 cloud）
+  - 全 emoji 替换 SVG：📁 ☁ 🔒 🔓 👁 ⚠ → SVG
+- 后续 — filter chain / chroma key / 透视 / Flip-rotate90 / reference-lock 视觉
