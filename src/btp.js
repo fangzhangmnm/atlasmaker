@@ -61,8 +61,8 @@ export class BTPManager {
 
   // 推送：name 已存在 → PUT；否则 POST 新建
   async push(name, blob) {
-    if (!name) throw new Error("binding 名为空");
-    if (!blob) throw new Error("blob 为空");
+    if (!name) throw new Error("binding name is empty");
+    if (!blob) throw new Error("blob is empty");
     let exists = false;
     try {
       await this.client.getTextureMetadata(name);

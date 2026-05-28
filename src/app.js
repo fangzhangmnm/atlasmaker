@@ -19,6 +19,9 @@ import * as storage from "./storage.js";
 import { zipPack, zipUnpack, zipPackEncrypted, zipUnpackEncrypted, detectAtlasFormat } from "./zip.js";
 import * as cloud from "./cloud.js";
 import { sessionFileName } from "./config.js";
+import { rasterizeImage } from "./raster.js";
+import * as crop from "./crop.js";
+import { makeSwatchBlob, samplePixel, worldToNaturalPx, colorToHex, hexToColor } from "./swatch.js";
 
 const SCENE_FORMAT_VERSION = 1;
 
@@ -38,24 +41,32 @@ const scene = new Scene(worldEl);
 // ----- HUD -----
 const zoomLabel = document.getElementById("zoomLabel");
 const countLabel = document.getElementById("countLabel");
+const sizeLabel = document.getElementById("sizeLabel");
 const statusLabel = document.getElementById("statusLabel");
 
 function refreshHud() {
   zoomLabel.textContent = `${Math.round(board.viewport.scale * 100)}%`;
   const n = scene.count();
-  countLabel.textContent = `${n} 项`;
+  countLabel.textContent = `${n} item${n === 1 ? "" : "s"}`;
+  // 估算 atlas 大小 = Σ image.blob.size。PNG/JPEG 已压缩，zip wrap 开销忽略。
+  // thumb.png + scene.json 加起来通常 < 100KB，对几 MB 量级的图集来说零头。
+  let totalBytes = 0;
+  for (const o of scene.objects.values()) {
+    if (o.type === "image" && o.blob) totalBytes += o.blob.size;
+  }
+  sizeLabel.textContent = formatBytes(totalBytes);
   if (n === 0) {
-    statusLabel.textContent = "空白工作台 — Ctrl+V 粘贴图片";
+    statusLabel.textContent = "Empty board — Ctrl+V to paste an image";
   } else {
     const sel = scene.firstSelected();
     if (sel) {
       if (sel.type === "image") {
-        statusLabel.textContent = `图片 ${sel.naturalW}×${sel.naturalH} (rect ${sel.w}×${sel.h})`;
+        statusLabel.textContent = `Image ${sel.naturalW}×${sel.naturalH} (rect ${sel.w}×${sel.h})`;
       } else if (sel.type === "viewport") {
-        statusLabel.textContent = `Viewport rect ${sel.w}×${sel.h} → 输出 ${sel.resW}×${sel.resH}`;
+        statusLabel.textContent = `Viewport rect ${sel.w}×${sel.h} → output ${sel.resW}×${sel.resH}`;
       }
     } else {
-      statusLabel.textContent = "拖动 / 选中对象";
+      statusLabel.textContent = "Drag / select an object";
     }
   }
 }
@@ -68,6 +79,7 @@ const toolButtons = {
   select: document.getElementById("toolSelect"),
   hand: document.getElementById("toolHand"),
   viewport: document.getElementById("toolViewport"),
+  eyedropper: document.getElementById("toolEyedropper"),
 };
 
 function setActiveTool(tool) {
@@ -81,6 +93,7 @@ for (const [name, btn] of Object.entries(toolButtons)) {
 }
 
 document.getElementById("fitButton").addEventListener("click", () => doFit());
+document.getElementById("pasteButton").addEventListener("click", () => smartPasteFromClipboard());
 function doFit() { board.fitTo(scene.bboxes()); }
 
 // 导入 / 导出（按钮已搬进汉堡菜单；这里只挂 file picker）
@@ -128,10 +141,10 @@ function setSaveStatus(state) {
   if (!saveStatusEl) return;
   saveStatusEl.dataset.state = state;
   const label = ({
-    dirty:  "未保存",
-    saving: "保存中…",
-    saved:  "已保存",
-    error:  "保存失败",
+    dirty:  "Unsaved",
+    saving: "Saving…",
+    saved:  "Saved",
+    error:  "Save failed",
   })[state] || "";
   saveStatusEl.textContent = _currentEncrypted ? `${label} 🔒` : label;
 }
@@ -239,8 +252,13 @@ async function buildAtlasZip() {
   const snap = scene.snapshot();
   const doc = makeSceneDoc(snap);
   const entries = [{ path: "scene.json", data: JSON.stringify(doc, null, 2) }];
+  // 防御性 dedupe by src：0.9.5 之前 duplicate 复制了 src，老 atlas zip 可能两个 obj 同 path → 写两次 = 损坏。
+  // 现在 duplicate 强制换新 src，但已有的脏文件 load 进来仍可能 dupe。这里按 src 去重。
+  const seenSrcs = new Set();
   for (const o of snap.objects.values()) {
     if (o.type === "image" && o.src && o.blob) {
+      if (seenSrcs.has(o.src)) continue;
+      seenSrcs.add(o.src);
       entries.push({ path: o.src, data: o.blob });
     }
   }
@@ -260,7 +278,20 @@ async function buildAtlasZip() {
 // 当前 session 的 IDB key = "<sessionInput.value>.atlas.zip" / "characters/wall.atlas.zip" 之类。
 // localStorage 跟踪上次打开的 path，刷新时回到那里。
 const CURRENT_PATH_KEY = "atlasmaker.currentPath";
-const DEFAULT_SESSION_NAME = "未命名";
+const DEFAULT_SESSION_NAME = "Untitled";
+
+// 找一个还没被占的「Untitled (n)」路径。boot 失败时用，避免误覆盖已有「Untitled」session。
+async function findFreshSlotPath() {
+  const base = sessionFileName(DEFAULT_SESSION_NAME);
+  const baseExists = await storage.getSession(base).catch(() => null);
+  if (!baseExists) return base;
+  for (let i = 2; i < 1000; i++) {
+    const path = sessionFileName(`${DEFAULT_SESSION_NAME} ${i}`);
+    const existing = await storage.getSession(path).catch(() => null);
+    if (!existing) return path;
+  }
+  return sessionFileName(`${DEFAULT_SESSION_NAME} ${Date.now()}`);
+}
 function pathFromInput() { return sessionFileName(sessionInput.value || DEFAULT_SESSION_NAME); }
 function getCurrentPath() {
   try { return localStorage.getItem(CURRENT_PATH_KEY) || sessionFileName(DEFAULT_SESSION_NAME); }
@@ -281,116 +312,328 @@ function stemOfPath(path) { return path.replace(/\.atlas\.zip$/i, ""); }
 let _currentSessionPassword = null;
 let _currentEncrypted = false;
 
-// 简单的 prompt 封装，全部 async 化（用 setTimeout 让 UI 刷一帧）
-function _delayedPrompt(message, isPassword = false) {
-  return new Promise((resolve) => setTimeout(() => resolve(window.prompt(message)), 0));
+// 密码 / phrase dialog：替代 window.prompt（themed UI、密码字段 type=password、显隐切换、回车确认、Esc 取消）
+// 三种 mode：
+//   "password"    — 单密码框，OK 返回字符串，cancel 返回 null
+//   "newPassword" — 双密码框 + 校验一致，OK 返回字符串
+//   "typePhrase"  — 单文本框 + 校验等于 expectedPhrase，OK 返回 true，cancel 返回 false
+const _pwEls = {
+  backdrop: document.getElementById("pwBackdrop"),
+  dialog: document.getElementById("pwDialog"),
+  title: document.getElementById("pwTitle"),
+  message: document.getElementById("pwMessage"),
+  input1: document.getElementById("pwInput1"),
+  input2: document.getElementById("pwInput2"),
+  field2: document.getElementById("pwField2"),
+  show1: document.getElementById("pwShow1"),
+  error: document.getElementById("pwError"),
+  cancel: document.getElementById("pwCancel"),
+  ok: document.getElementById("pwOk"),
+};
+let _pwActiveResolve = null;
+function _closePwDialog(value) {
+  _pwEls.dialog.classList.add("hidden");
+  _pwEls.backdrop.classList.add("hidden");
+  _pwEls.input1.value = "";
+  _pwEls.input2.value = "";
+  _pwEls.error.textContent = "";
+  _pwEls.input1.type = "password";
+  _pwEls.input2.type = "password";
+  const r = _pwActiveResolve;
+  _pwActiveResolve = null;
+  if (r) r(value);
 }
-async function promptPassword(message = "输入密码") {
-  const pw = await _delayedPrompt(message, true);
-  return pw === null ? null : pw;
-}
-async function promptNewPassword(title = "设密码（用于加密这个会话）") {
-  const pw1 = await _delayedPrompt(title, true);
-  if (!pw1) return null;
-  const pw2 = await _delayedPrompt("再输一次确认密码", true);
-  if (pw1 !== pw2) { window.alert("两次密码不一致，已取消"); return null; }
-  return pw1;
-}
-async function confirmTypePhrase(phrase, message) {
-  const got = await _delayedPrompt(message);
-  return got === phrase;
+_pwEls.cancel.addEventListener("click", () => _closePwDialog(null));
+_pwEls.backdrop.addEventListener("click", () => _closePwDialog(null));
+_pwEls.show1.addEventListener("click", () => {
+  const showing = _pwEls.input1.type === "text";
+  _pwEls.input1.type = showing ? "password" : "text";
+  _pwEls.input2.type = showing ? "password" : "text";
+});
+function _pwDialog({ mode, title, message, expectedPhrase, okLabel = "OK" }) {
+  return new Promise((resolve) => {
+    if (_pwActiveResolve) { _closePwDialog(null); }
+    _pwActiveResolve = resolve;
+    _pwEls.title.textContent = title;
+    _pwEls.message.textContent = message || "";
+    _pwEls.message.style.display = message ? "" : "none";
+    _pwEls.ok.textContent = okLabel;
+    if (mode === "newPassword") {
+      _pwEls.field2.classList.remove("hidden");
+      _pwEls.input1.type = "password";
+      _pwEls.input2.type = "password";
+      _pwEls.input1.placeholder = "New password";
+      _pwEls.show1.style.display = "";
+    } else if (mode === "password") {
+      _pwEls.field2.classList.add("hidden");
+      _pwEls.input1.type = "password";
+      _pwEls.input1.placeholder = "";
+      _pwEls.show1.style.display = "";
+    } else { // typePhrase
+      _pwEls.field2.classList.add("hidden");
+      _pwEls.input1.type = "text";
+      _pwEls.input1.placeholder = expectedPhrase || "";
+      _pwEls.show1.style.display = "none";
+    }
+    _pwEls.error.textContent = "";
+    _pwEls.backdrop.classList.remove("hidden");
+    _pwEls.dialog.classList.remove("hidden");
+    setTimeout(() => _pwEls.input1.focus(), 0);
+
+    const submit = () => {
+      const v1 = _pwEls.input1.value;
+      if (mode === "newPassword") {
+        if (!v1) { _pwEls.error.textContent = "Password is empty"; return; }
+        if (v1 !== _pwEls.input2.value) { _pwEls.error.textContent = "Passwords don't match"; return; }
+        _closePwDialog(v1);
+      } else if (mode === "password") {
+        _closePwDialog(v1);
+      } else { // typePhrase
+        _closePwDialog(v1 === expectedPhrase);
+      }
+    };
+    const onKey = (e) => {
+      if (e.key === "Enter") { e.preventDefault(); submit(); }
+      else if (e.key === "Escape") { e.preventDefault(); _closePwDialog(mode === "typePhrase" ? false : null); }
+    };
+    const okClick = () => submit();
+    _pwEls.ok.addEventListener("click", okClick);
+    _pwEls.input1.addEventListener("keydown", onKey);
+    _pwEls.input2.addEventListener("keydown", onKey);
+    // 清理：dialog 关闭时 _closePwDialog 通过 _pwActiveResolve = null 标记已关
+    // 把 listener 一并清掉避免叠加
+    const cleanup = (val) => {
+      _pwEls.ok.removeEventListener("click", okClick);
+      _pwEls.input1.removeEventListener("keydown", onKey);
+      _pwEls.input2.removeEventListener("keydown", onKey);
+      resolve(val);
+    };
+    // 用 wrapper 替换 _pwActiveResolve，让 _closePwDialog 在退出时清 listener
+    _pwActiveResolve = cleanup;
+  });
 }
 
-async function saveCurrentSession() {
-  if (_saving) return;
+async function promptPassword(message = "Enter password") {
+  return await _pwDialog({ mode: "password", title: "Password", message });
+}
+async function promptNewPassword(title = "Set a password to encrypt this session") {
+  return await _pwDialog({ mode: "newPassword", title: "Set password", message: title });
+}
+async function confirmTypePhrase(phrase, message) {
+  return await _pwDialog({ mode: "typePhrase", title: "Confirm", message, expectedPhrase: phrase, okLabel: "Confirm" });
+}
+
+// 保存 = 本地 IDB（atomic）；explicit=true 时**额外**触发云推（用户在场 = 能看见 toast 和 412 提示）。
+// autosave / 3-min / visibility 仍走 explicit=false → 绝不触云（用户没在场，412 sibling 会失踪）。
+// Ctrl+Shift+S 走 explicit=true + skipCloud=true：用户明确「只存本地」，跳过云、但给个 toast 确认。
+// Coalesced save 模式：
+//   - `_saving` 覆盖**整段** local + cloud + toast，期间任何 saveCurrentSession 调用都立刻 return
+//   - drain 条件 = **整轮保存期间 scene 是否被改过**（`_dirty` 在保存中复活 = 有真改动）。
+//     没改 = 当前保存已经覆盖了全部状态，drain 是 no-op，跳过；改了 = 当前保存只覆盖到改之前，
+//     得再跑一次把改动也保存。
+//   - `_pendingSaveOpts` 只是「**如果**要 drain，用谁的意图」：保存期间最近一次显式按键（Ctrl+S
+//     vs Ctrl+Shift+S）的 opts。没人按 = drain 用 autosave 默认（local only, 静默）。
+//   - 用户狂按 Ctrl+S 但没改东西 → 一次保存就够，后续按键无 op。
+//   - 用户按 Ctrl+S 后又改了几笔 → 第一轮存当时状态，第二轮 drain 把改动也存。
+//   - 这避免了 0.9.8 之前的隐患：`_saving = false` 在本地保存完就放了，云推阶段还能并发 → 平行上传。
+let _pendingSaveOpts = null;
+
+async function saveCurrentSession({ explicit = false, skipCloud = false } = {}) {
+  if (_saving) {
+    _pendingSaveOpts = { explicit, skipCloud };
+    return;
+  }
+  // _loading 期间（boot apply / 密码 prompt / 解密 zip / cloud pull-and-open）拒绝保存：
+  // 此时 scene 状态可能是「正在被替换」的半成品，存下去会污染 IDB。
+  // 用户在场触发（explicit=true）给个 toast；autosave 静默 return。
+  if (_loading) {
+    if (explicit) showActionToast("Still loading — try again in a moment", 3000);
+    return;
+  }
   _saving = true;
   setSaveStatus("saving");
+  if (explicit && cloud.isAuthConfigured() && cloud.isSignedIn()) {
+    cloudPushBtn.disabled = true;
+  }
   try {
-    const { atlas, thumb, doc, encrypted } = await buildAtlasZip();
-    const newPath = pathFromInput();
-    const oldPath = _activeIDBPath;
-    await storage.putSession(newPath, {
-      name: doc.name,
-      updatedAt: doc.updatedAt,
-      atlas,
-      thumb: encrypted ? null : thumb,
-      encrypted: !!encrypted,
-    });
-    // 重命名 IDB：新写完了 → 删老 key（_activeIDBPath != newPath = 用户改过 input）
-    if (oldPath && oldPath !== newPath) {
-      try { await storage.deleteSession(oldPath); } catch (e) { console.warn("rename: 删老 key 失败", e); }
+    // === 本地 IDB ===
+    let localErr = null;
+    let builtAtlas = null;
+    let savedDoc = null;
+    try {
+      const { atlas, thumb, doc, encrypted } = await buildAtlasZip();
+      builtAtlas = atlas;
+      savedDoc = doc;
+      const newPath = pathFromInput();
+      const oldPath = _activeIDBPath;
+      await storage.putSession(newPath, {
+        name: doc.name,
+        updatedAt: doc.updatedAt,
+        atlas,
+        thumb: encrypted ? null : thumb,
+        encrypted: !!encrypted,
+      });
+      if (oldPath && oldPath !== newPath) {
+        try { await storage.deleteSession(oldPath); } catch (e) { console.warn("rename: 删老 key 失败", e); }
+      }
+      _activeIDBPath = newPath;
+      setCurrentPath(newPath);
+      _dirty = false;
+      setSaveStatus("saved");
+      if (cloud.isAuthConfigured() && cloud.isSignedIn()) {
+        cloud.setCloudDirty(doc.name, true);
+        refreshCloudUI();
+      }
+    } catch (e) {
+      localErr = e;
+      console.warn("save failed", e);
+      setSaveStatus("error");
     }
-    _activeIDBPath = newPath;
-    setCurrentPath(newPath);
-    _dirty = false;
-    setSaveStatus("saved");
-    // 本地 IDB 写完 → 云端关系到此变 dirty（如果登录中）
-    if (cloud.isAuthConfigured() && cloud.isSignedIn()) {
-      cloud.setCloudDirty(doc.name, true);
+    if (localErr) {
+      if (explicit) showActionToast(`Save failed: ${localErr.message || localErr}`, 5000);
+      return;
+    }
+    if (!explicit) return;
+    if (skipCloud) {
+      showActionToast("Saved locally (cloud skipped — use Ctrl+S to push)");
+      return;
+    }
+    if (!cloud.isAuthConfigured() || !cloud.isSignedIn()) {
+      showActionToast("Saved locally");
+      return;
+    }
+
+    // === 云推 ===
+    let pushOutcome = null;
+    try {
+      const name = savedDoc.name;
+      const newCloudPath = pathFromInput();
+      const oldCloudPath = _activeCloudPath;
+      const result = await cloud.pushAtlas(name, builtAtlas);
+      if (result.action === "uploaded") {
+        let renamedFrom = null;
+        if (oldCloudPath && oldCloudPath !== newCloudPath) {
+          try { await cloud.deleteAtlas(stemOfPath(oldCloudPath)); renamedFrom = oldCloudPath; }
+          catch (e) { console.warn("delete old cloud failed:", e); }
+        }
+        _activeCloudPath = newCloudPath;
+        pushOutcome = { action: "uploaded", renamedFrom };
+      }
       refreshCloudUI();
+    } catch (e) {
+      if (e instanceof cloud.CloudConflictError) {
+        pushOutcome = { conflict: true, sessionName: e.sessionName };
+      } else {
+        pushOutcome = { error: e.message || String(e) };
+      }
     }
-  } catch (e) {
-    console.warn("save failed", e);
-    setSaveStatus("error");
+
+    if (pushOutcome?.error) {
+      showActionToast(`Saved locally (cloud push failed: ${pushOutcome.error})`, 5000);
+    } else if (pushOutcome?.conflict) {
+      showActionToast(`Saved locally — OneDrive has a newer "${pushOutcome.sessionName}". Rename your board and Ctrl+S again.`, 8000);
+    } else if (pushOutcome?.action === "uploaded") {
+      showActionToast(pushOutcome.renamedFrom
+        ? `Saved (local + cloud, deleted old ${pushOutcome.renamedFrom})`
+        : "Saved (local + cloud)");
+    }
   } finally {
     _saving = false;
+    cloudPushBtn.disabled = !cloud.isSignedIn();
+    // Drain：scene 在保存期间被改过（_dirty 又变 true）→ 再保存一次；否则 no-op 丢弃 pending。
+    // queueMicrotask 避开自递归 stack。
+    const wantDrain = _dirty;
+    const opts = _pendingSaveOpts;
+    _pendingSaveOpts = null;
+    if (wantDrain) {
+      queueMicrotask(() => saveCurrentSession(opts || { explicit: false, skipCloud: false }));
+    }
   }
 }
 
 // 从 zip 解出来的 atlas 恢复到 scene。被 IDB 启动加载和 import 共用。
 // passwordHint 是可选预知密码（pull 时常用）；没传 + 是加密格式 = prompt 用户。
+// 流程：先确认加密类型 + 拿密码（不锁 UI，让 prompt 能显示）→ withBusy 包住解包 + scene 重建。
 async function applyAtlasZipBlob(atlasBlob, { passwordHint = null } = {}) {
   const fmt = await detectAtlasFormat(atlasBlob);
-  let entries;
   let usedPassword = null;
   if (fmt === "encrypted") {
     let pw = passwordHint;
-    if (!pw) pw = await promptPassword("输入密码以解开加密会话");
-    if (pw === null) throw new Error("已取消（未输密码）");
-    try {
-      entries = await zipUnpackEncrypted(atlasBlob, pw);
-      usedPassword = pw;
-    } catch (e) {
-      throw new Error(e.message || "密码错或文件损坏");
-    }
-  } else {
-    entries = await zipUnpack(atlasBlob);
+    if (!pw) pw = await promptPassword("Enter password to unlock encrypted session");
+    if (pw === null) throw new Error("cancelled (no password)");
+    usedPassword = pw;
   }
-  const sceneBytes = entries["scene.json"];
-  if (!sceneBytes) throw new Error("ZIP 里没有 scene.json");
-  const doc = JSON.parse(new TextDecoder().decode(sceneBytes));
-  if (doc.format_version !== SCENE_FORMAT_VERSION) {
-    console.warn("scene.json format_version", doc.format_version, "vs current", SCENE_FORMAT_VERSION);
-  }
-  const objects = (doc.objects || []).map((o) => {
-    const obj = { ...o };
-    if (obj.type === "image" && obj.src) {
-      const bytes = entries[obj.src];
-      if (bytes) {
-        const ext = (obj.src.split(".").pop() || "png").toLowerCase();
-        const mime = (ext === "jpg" || ext === "jpeg") ? "image/jpeg" : "image/png";
-        obj.blob = new Blob([bytes], { type: mime });
+  return await withBusy(fmt === "encrypted" ? "Decrypting…" : "Loading session…", async () => {
+    let entries;
+    if (fmt === "encrypted") {
+      try {
+        entries = await zipUnpackEncrypted(atlasBlob, usedPassword);
+      } catch (e) {
+        throw new Error(e.message || "wrong password or file corrupted");
       }
-      obj._displayUrl = null;
+    } else {
+      entries = await zipUnpack(atlasBlob);
     }
-    return obj;
+    const sceneBytes = entries["scene.json"];
+    if (!sceneBytes) throw new Error("ZIP has no scene.json");
+    const doc = JSON.parse(new TextDecoder().decode(sceneBytes));
+    if (doc.format_version !== SCENE_FORMAT_VERSION) {
+      console.warn("scene.json format_version", doc.format_version, "vs current", SCENE_FORMAT_VERSION);
+    }
+    const objects = (doc.objects || []).map((o) => {
+      const obj = { ...o };
+      if (obj.type === "image" && obj.src) {
+        const bytes = entries[obj.src];
+        if (bytes) {
+          const ext = (obj.src.split(".").pop() || "png").toLowerCase();
+          const mime = (ext === "jpg" || ext === "jpeg") ? "image/jpeg" : "image/png";
+          obj.blob = new Blob([bytes], { type: mime });
+        }
+        obj._displayUrl = null;
+      }
+      return obj;
+    });
+    const objMap = new Map();
+    for (const o of objects) objMap.set(o.id, o);
+    // 消毒 imageOrder / viewportOrder：
+    //   - dedupe 同层重复 id（0.9.0 之前 _idSeq 撞 id 写出来的脏 scene.json）
+    //   - 把 obj 实际类型不属于本层的 id 过滤掉（防止 image obj 漏到 viewport 层）
+    //   - 若 obj 存在但没出现在任何 order 里，按 type 自动补到对应层尾
+    const cleanOrder = (raw, wantType) => {
+      const seen = new Set();
+      const out = [];
+      for (const id of raw || []) {
+        if (seen.has(id)) continue;
+        const o = objMap.get(id);
+        if (!o || o.type !== wantType) continue;
+        seen.add(id);
+        out.push(id);
+      }
+      return out;
+    };
+    const imageOrder = cleanOrder(doc.imageOrder, "image");
+    const viewportOrder = cleanOrder(doc.viewportOrder, "viewport");
+    const inImg = new Set(imageOrder);
+    const inVp = new Set(viewportOrder);
+    for (const o of objMap.values()) {
+      if (o.type === "image" && !inImg.has(o.id)) imageOrder.push(o.id);
+      else if (o.type === "viewport" && !inVp.has(o.id)) viewportOrder.push(o.id);
+    }
+    scene.restore({
+      objects: objMap,
+      imageOrder,
+      viewportOrder,
+      selection: new Set(),
+    });
+    scene._undoStack.length = 0;
+    scene._redoStack.length = 0;
+    if (doc.board) board.setViewport(doc.board.tx, doc.board.ty, doc.board.scale);
+    if (typeof doc.name === "string") { sessionInput.value = doc.name; applySessionTitle(); }
+    // 更新内存里的加密状态
+    _currentEncrypted = (fmt === "encrypted");
+    _currentSessionPassword = usedPassword;
+    return doc;
   });
-  const objMap = new Map();
-  for (const o of objects) objMap.set(o.id, o);
-  scene.restore({
-    objects: objMap,
-    imageOrder: doc.imageOrder || [],
-    viewportOrder: doc.viewportOrder || [],
-    selection: new Set(),
-  });
-  scene._undoStack.length = 0;
-  scene._redoStack.length = 0;
-  if (doc.board) board.setViewport(doc.board.tx, doc.board.ty, doc.board.scale);
-  if (typeof doc.name === "string") { sessionInput.value = doc.name; applySessionTitle(); }
-  // 更新内存里的加密状态
-  _currentEncrypted = (fmt === "encrypted");
-  _currentSessionPassword = usedPassword;
-  return doc;
 }
 
 async function loadCurrentSession() {
@@ -422,7 +665,7 @@ async function loadCurrentSession() {
 async function openSessionByPath(path) {
   if (_dirty && !_saving) await saveCurrentSession();
   const pkg = await storage.getSession(path);
-  if (!pkg) { showActionToast(`找不到：${path}`, 4000); return; }
+  if (!pkg) { showActionToast(`Not found: ${path}`, 4000); return; }
   // 如果是重新打开「实际已经在内存里那个 session」，复用 memory 里的密码免再 prompt
   const passwordHint = (path === _activeIDBPath && _currentEncrypted) ? _currentSessionPassword : null;
   _loading = true;
@@ -468,9 +711,9 @@ async function exportCurrentSceneAsZip() {
     const safeName = (sessionInput.value || "atlas").replace(/[\\/:*?"<>|]+/g, "_").trim() || "atlas";
     downloadBlob(atlas, `${safeName}.atlas.zip`);
     const n = (doc.objects || []).filter((o) => o.type === "image").length;
-    showActionToast(`已导出（${n} 张图）`);
+    showActionToast(`Exported (${n} image${n === 1 ? "" : "s"})`);
   } catch (e) {
-    showActionToast(`导出失败：${e.message || e}`, 4000);
+    showActionToast(`Export failed: ${e.message || e}`, 4000);
   }
 }
 
@@ -482,10 +725,10 @@ async function importSceneFromZipFile(file) {
     // 立刻 atomic 写一次 IDB（让导入立刻持久化，避免 refresh 又丢）
     await saveCurrentSession();
     const n = (doc.objects || []).filter((o) => o.type === "image").length;
-    showActionToast(`已导入：${doc.name || "未命名"}（${n} 张图）`);
+    showActionToast(`Imported: ${doc.name || "Untitled"} (${n} image${n === 1 ? "" : "s"})`);
   } catch (e) {
     _loading = false;
-    showActionToast(`导入失败：${e.message || e}`, 5000);
+    showActionToast(`Import failed: ${e.message || e}`, 5000);
   }
 }
 
@@ -510,7 +753,7 @@ window.addEventListener("pagehide", () => {
 
 // ----- 主题 + 汉堡菜单 -----
 const THEMES = ["auto", "day", "night"];
-const THEME_LABELS = { auto: "自动", day: "日", night: "夜" };
+const THEME_LABELS = { auto: "Auto", day: "Day", night: "Night" };
 
 function cycleTheme() {
   const cur = document.documentElement.getAttribute("data-theme") || "auto";
@@ -522,7 +765,7 @@ function cycleTheme() {
 function updateThemeMenuLabel() {
   const cur = document.documentElement.getAttribute("data-theme") || "auto";
   const lbl = document.getElementById("menuThemeLabel");
-  if (lbl) lbl.textContent = `主题：${THEME_LABELS[cur] || cur}`;
+  if (lbl) lbl.textContent = `Theme: ${THEME_LABELS[cur] || cur}`;
 }
 updateThemeMenuLabel();
 
@@ -615,10 +858,14 @@ function refreshPanels() {
     vpPanel.classList.add("hidden");
     // 显示原图分辨率 + blob 字节 —— 让用户能看出哪张是 4K 大块头白浪费内存
     const sizeStr = sel.blob ? formatBytes(sel.blob.size) : "—";
-    imgNaturalLabel.textContent = `${sel.naturalW}×${sel.naturalH} · ${sizeStr}`;
+    const cropStr = sel.crop ? ` (cropped ${Math.round(sel.crop.w)}×${Math.round(sel.crop.h)})` : "";
+    imgNaturalLabel.textContent = `${sel.naturalW}×${sel.naturalH}${cropStr} · ${sizeStr}`;
     imgLock.setAttribute("aria-pressed", sel.locked ? "true" : "false");
     imgLock.textContent = sel.locked ? "🔒" : "🔓";
     imgInterp.value = sel.interp || "linear";
+    // Reset crop 只在有 crop 时显示（用 disabled，避免按钮位置跳）
+    const resetBtn = document.getElementById("imgResetCrop");
+    if (resetBtn) resetBtn.disabled = !sel.crop;
   } else {
     vpPanel.classList.add("hidden");
     imgPanel.classList.add("hidden");
@@ -658,21 +905,21 @@ vpExportBtn.addEventListener("click", async () => {
   const sel = scene.firstSelected();
   if (!sel || sel.type !== "viewport") return;
   const blob = await rasterizeViewport(sel);
-  if (!blob) { showActionToast("导出失败"); return; }
+  if (!blob) { showActionToast("Export failed"); return; }
   downloadBlob(blob, `viewport-${sel.resW}x${sel.resH}.png`);
-  showActionToast(`已导出 ${sel.resW}×${sel.resH} PNG`);
+  showActionToast(`Exported ${sel.resW}×${sel.resH} PNG`);
 });
 
 vpCopyBtn.addEventListener("click", async () => {
   const sel = scene.firstSelected();
   if (!sel || sel.type !== "viewport") return;
   const blob = await rasterizeViewport(sel);
-  if (!blob) { showActionToast("导出失败"); return; }
+  if (!blob) { showActionToast("Export failed"); return; }
   try {
     await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
-    showActionToast(`${sel.resW}×${sel.resH} 已复制到剪贴板`);
+    showActionToast(`Copied ${sel.resW}×${sel.resH} to clipboard`);
   } catch (e) {
-    showActionToast("剪贴板复制失败：" + (e.message || e));
+    showActionToast("Clipboard copy failed: " + (e.message || e));
   }
 });
 
@@ -709,27 +956,27 @@ vpPushBtn.addEventListener("click", async () => {
   const sel = scene.firstSelected();
   if (!sel || sel.type !== "viewport") return;
   if (!btp.isConnected()) {
-    showActionToast("Blender 未连接 —— 点顶栏「Blender」图标重试");
+    showActionToast("Blender not connected — click the Blender pill in the top bar to retry");
     return;
   }
   const name = (sel.binding || "").trim();
   if (!name) {
-    showActionToast("先填 binding 名");
+    showActionToast("Set a binding name first");
     vpBinding.focus();
     return;
   }
   vpPushBtn.disabled = true;
-  showActionToast(`推送中 ${sel.resW}×${sel.resH} → ${name}…`, 60000);
+  showActionToast(`Pushing ${sel.resW}×${sel.resH} → ${name}…`, 60000);
   try {
     const blob = await rasterizeViewport(sel);
-    if (!blob) throw new Error("光栅化失败");
+    if (!blob) throw new Error("rasterize failed");
     const { action } = await btp.push(name, blob);
     showActionToast(action === "created"
-      ? `已新建 Blender texture: ${name} (${sel.resW}×${sel.resH})`
-      : `已更新 Blender texture: ${name} (${sel.resW}×${sel.resH})`);
+      ? `Created Blender texture: ${name} (${sel.resW}×${sel.resH})`
+      : `Updated Blender texture: ${name} (${sel.resW}×${sel.resH})`);
   } catch (e) {
     const msg = e instanceof BTPError ? `${e.code}: ${e.message}` : (e.message || String(e));
-    showActionToast(`推送失败：${msg}`, 4000);
+    showActionToast(`Push failed: ${msg}`, 4000);
   } finally {
     vpPushBtn.disabled = false;
   }
@@ -750,6 +997,134 @@ imgDeleteBtn.addEventListener("click", () => {
   const sel = scene.firstSelected();
   if (sel) scene.act(() => scene.remove(sel.id));
 });
+
+// ----- Rasterize 对话框 -----
+// 把当前 image obj 的 nondestructive 状态（crop / 未来的 filters / 等）烤进新 blob，
+// 同时按目标分辨率重采样。模式 = "adaptive"（浏览器内插）或 "nearest"（像素硬复制）。
+// 默认值：若 obj.interp == "nearest" → 默认 nearest mode（像素图用户的预期）。
+const rasterBackdrop = document.getElementById("rasterBackdrop");
+const rasterDialog = document.getElementById("rasterDialog");
+const rasterWInput = document.getElementById("rasterW");
+const rasterHInput = document.getElementById("rasterH");
+const rasterLockAspect = document.getElementById("rasterLockAspect");
+const rasterModeSelect = document.getElementById("rasterMode");
+const rasterSourceLabel = document.getElementById("rasterSource");
+const rasterEstimateLabel = document.getElementById("rasterEstimate");
+const rasterApplyBtn = document.getElementById("rasterApply");
+const rasterCancelBtn = document.getElementById("rasterCancel");
+const imgRasterizeBtn = document.getElementById("imgRasterize");
+
+let _rasterTargetId = null; // 打开时锁定的目标 obj id（中途 selection 变了也跑这个）
+let _rasterAspect = 1;
+
+function _rasterUpdateEstimate() {
+  const w = parseInt(rasterWInput.value, 10) || 0;
+  const h = parseInt(rasterHInput.value, 10) || 0;
+  if (w < 1 || h < 1) { rasterEstimateLabel.textContent = "—"; return; }
+  // 粗估 PNG 大小：4 bytes/px × W × H × 0.3 压缩率（典型自然图）。pixel art 更小，但保守估。
+  const bytes = Math.round(w * h * 4 * 0.3);
+  rasterEstimateLabel.textContent = `Output ≈ ${formatBytes(bytes)} PNG`;
+}
+
+function openRasterizeDialog() {
+  const sel = scene.firstSelected();
+  if (!sel || sel.type !== "image") {
+    showActionToast("Select an image to rasterize", 3000);
+    return;
+  }
+  if (!sel.blob) { showActionToast("Image has no data"); return; }
+  _rasterTargetId = sel.id;
+  // 默认 = crop 后的 native 分辨率（无 crop 时就是 naturalW/H）。
+  // crop.w/h 来自 applyCropMath 是浮点 → 这里 round 给用户整数默认值；
+  // raster.js 内部仍按整数 px 处理 canvas。
+  const cw = Math.round(sel.crop?.w ?? sel.naturalW);
+  const ch = Math.round(sel.crop?.h ?? sel.naturalH);
+  rasterWInput.value = cw;
+  rasterHInput.value = ch;
+  _rasterAspect = ch > 0 ? cw / ch : 1;
+  rasterLockAspect.checked = true;
+  rasterModeSelect.value = sel.interp === "nearest" ? "nearest" : "adaptive";
+  rasterSourceLabel.textContent = `Source: ${sel.naturalW}×${sel.naturalH}${sel.crop ? ` (cropped ${cw}×${ch})` : ""} · ${formatBytes(sel.blob.size)}`;
+  _rasterUpdateEstimate();
+  rasterBackdrop.classList.remove("hidden");
+  rasterDialog.classList.remove("hidden");
+  setTimeout(() => rasterWInput.focus(), 0);
+}
+
+function closeRasterizeDialog() {
+  rasterBackdrop.classList.add("hidden");
+  rasterDialog.classList.add("hidden");
+  _rasterTargetId = null;
+}
+
+rasterWInput.addEventListener("input", () => {
+  if (rasterLockAspect.checked) {
+    const w = parseInt(rasterWInput.value, 10) || 0;
+    if (w > 0) rasterHInput.value = Math.max(1, Math.round(w / _rasterAspect));
+  }
+  _rasterUpdateEstimate();
+});
+rasterHInput.addEventListener("input", () => {
+  if (rasterLockAspect.checked) {
+    const h = parseInt(rasterHInput.value, 10) || 0;
+    if (h > 0) rasterWInput.value = Math.max(1, Math.round(h * _rasterAspect));
+  }
+  _rasterUpdateEstimate();
+});
+rasterLockAspect.addEventListener("change", () => {
+  if (rasterLockAspect.checked) {
+    const w = parseInt(rasterWInput.value, 10) || 0;
+    const h = parseInt(rasterHInput.value, 10) || 0;
+    if (w > 0 && h > 0) _rasterAspect = w / h;
+  }
+});
+
+rasterCancelBtn.addEventListener("click", () => closeRasterizeDialog());
+rasterBackdrop.addEventListener("click", () => closeRasterizeDialog());
+rasterDialog.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); rasterApplyBtn.click(); }
+  else if (e.key === "Escape") { e.preventDefault(); closeRasterizeDialog(); }
+});
+
+rasterApplyBtn.addEventListener("click", async () => {
+  const id = _rasterTargetId;
+  if (!id) { closeRasterizeDialog(); return; }
+  const obj = scene.get(id);
+  if (!obj || obj.type !== "image" || !obj.blob) { closeRasterizeDialog(); return; }
+  const targetW = parseInt(rasterWInput.value, 10) || 0;
+  const targetH = parseInt(rasterHInput.value, 10) || 0;
+  if (targetW < 1 || targetH < 1) {
+    showActionToast("Invalid target dimensions", 3000);
+    return;
+  }
+  const mode = rasterModeSelect.value === "nearest" ? "nearest" : "adaptive";
+  closeRasterizeDialog();
+  try {
+    const newBlob = await withBusy(`Rasterizing → ${targetW}×${targetH}…`, () =>
+      rasterizeImage({
+        blob: obj.blob,
+        naturalW: obj.naturalW,
+        naturalH: obj.naturalH,
+        crop: obj.crop,
+        targetW,
+        targetH,
+        mode,
+      })
+    );
+    const newSrc = _newImageSrc(newBlob);
+    scene.act(() => {
+      scene.replaceImageBlob(id, newBlob, newSrc);
+      // 同步更新 natural 尺寸 + 重置 crop（已 baked 进新 blob）
+      scene.update(id, { naturalW: targetW, naturalH: targetH, crop: undefined });
+    });
+    showActionToast(`Rasterized to ${targetW}×${targetH} (${formatBytes(newBlob.size)})`);
+  } catch (e) {
+    console.warn("rasterize failed", e);
+    showActionToast(`Rasterize failed: ${e.message || e}`, 4000);
+  }
+});
+
+imgRasterizeBtn.addEventListener("click", () => openRasterizeDialog());
 
 // ----- z-order 按钮（两个 panel 共用一套 handler） -----
 function wireZBtn(btnId, fn) {
@@ -783,6 +1158,31 @@ function showActionToast(text, ms = 2000) {
   _toastTimer = setTimeout(() => actionToast.classList.add("hidden"), ms);
 }
 
+// ----- Busy overlay：长操作期间锁 UI 防误触 -----
+// 加密 / 解密 / 大 zip 解包 / 云拉，主线程会卡 1-3 秒，必须挡住所有点击。
+// 用 depth 计数支持嵌套调用（e.g. openSessionByPath → applyAtlasZipBlob 各自 wrap）。
+const busyOverlay = document.getElementById("busyOverlay");
+const busyLabel = document.getElementById("busyLabel");
+let _busyDepth = 0;
+function showBusy(label = "Working…") {
+  _busyDepth++;
+  busyLabel.textContent = label;
+  busyOverlay.classList.remove("hidden");
+}
+function hideBusy() {
+  _busyDepth = Math.max(0, _busyDepth - 1);
+  if (_busyDepth === 0) busyOverlay.classList.add("hidden");
+}
+async function withBusy(label, fn) {
+  showBusy(label);
+  // 让 overlay 真的绘出来再开干 —— double rAF 是必须的：
+  //   单 rAF 的 callback 在「下一帧 paint 前」触发，立刻 microtask resolve → fn 同步堵主线程
+  //   → paint 永远没机会发生。double rAF 等过一个完整 paint 周期再跑 fn。
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  try { return await fn(); }
+  finally { hideBusy(); }
+}
+
 function clampInt(v, lo, hi) {
   const n = Math.round(Number(v) || 0);
   return Math.max(lo, Math.min(hi, n));
@@ -794,19 +1194,7 @@ const input = new Input({
   board,
   scene,
   onTool: setActiveTool,
-  onPaste: ({ blob, naturalW, naturalH, x, y, targetLongWorld }) => {
-    const ext = (blob.type && blob.type.includes("jpeg")) ? "jpg" : "png";
-    const uid = (typeof crypto !== "undefined" && crypto.randomUUID)
-      ? crypto.randomUUID()
-      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-    const src = `images/${uid}.${ext}`;
-    scene.act(() => {
-      const obj = makeImageObject({ blob, src, naturalW, naturalH, x, y, targetLongWorld });
-      scene.add(obj);
-      scene.select(obj.id, false);
-    });
-    // markDirty 由 scene.onChange 自动触发；不在这里再调一次
-  },
+  onPaste: (m) => smartPasteFromMeasured(m),
   onViewportFinish: ({ x, y, w, h }) => {
     scene.act(() => {
       const binding = nextDefaultViewportBinding(scene);
@@ -817,8 +1205,10 @@ const input = new Input({
   },
   hooks: {
     onFit: doFit,
-    onSave: () => saveCurrentSession(),
+    onSave: () => saveCurrentSession({ explicit: true }),
+    onSaveLocal: () => saveCurrentSession({ explicit: true, skipCloud: true }),
     onCopy: () => copySelectedImageToClipboard(),
+    onEyedropper: ({ obj, clientX, clientY }) => handleEyedropper({ obj, clientX, clientY }),
     onDelete: () => {
       if (!scene.selection.size) return;
       scene.act(() => {
@@ -833,10 +1223,17 @@ const input = new Input({
         for (const id of ids) {
           const src = scene.get(id);
           if (!src) continue;
-          // 浅拷贝就行：Blob 不可变可共享，URL 让 _renderNode 重新生成
+          // 复制 = 完全独立。新 src（zip 路径必须唯一）+ 新 Blob 对象（独立字节副本）。
+          // Blob 共享虽然 immutable 安全 + 内存友好，但 user vision 是"如果出现两次，存两边"，
+          // 不想未来某次 lifecycle / cleanup 把一个引用 revoke 影响到另一个、也不想 memory profiler
+          // 看到「两个 obj 一个 blob」这种含糊状态。`new Blob([blob], {type})` 同步深拷贝字节。
           const copy = { ...src };
           delete copy.id;
           copy._displayUrl = null;
+          if (copy.type === "image" && copy.blob) {
+            copy.blob = new Blob([copy.blob], { type: copy.blob.type });
+            copy.src = _newImageSrc(copy.blob);
+          }
           copy.x += 20;
           copy.y += 20;
           scene.add(copy);
@@ -857,6 +1254,10 @@ input.setTool("select");
 // 所以：选区集没变 → 只更新位置；变了 → 重建。
 let _renderedSelSig = "";
 function renderOverlay() {
+  if (crop.isActive()) {
+    renderCropOverlay();
+    return;
+  }
   const multi = scene.selection.size > 1;
   // 多选时签名 = "multi:<ids>"，单选 = id。变了就重建（多选没有 handle）。
   const sig = (multi ? "multi:" : "") + Array.from(scene.selection).join(",");
@@ -1063,6 +1464,201 @@ function onRotateHandlePointerUp(ev) {
   scene.endAct();
 }
 
+// ----- Crop 4-gizmo 模式 -----
+// 状态 + DOM 由 crop.js 管，但 DOM 渲染（overlayEl 里）+ pointer 拖拽在这里。
+// 进 mode 时 _cropDom 创建一次；renderCropOverlay 只 update 位置。退出时 _cropDom 拆。
+let _cropDom = null;   // { rectEl, handles: {nw,n,ne,e,se,s,sw,w}, dimT, dimR, dimB, dimL }
+let _cropDragState = null; // { anchor, startRect, startWorld }
+const cropToolbar = document.getElementById("cropToolbar");
+
+function _buildCropDom() {
+  const dimT = document.createElement("div"); dimT.className = "crop-dim"; overlayEl.appendChild(dimT);
+  const dimR = document.createElement("div"); dimR.className = "crop-dim"; overlayEl.appendChild(dimR);
+  const dimB = document.createElement("div"); dimB.className = "crop-dim"; overlayEl.appendChild(dimB);
+  const dimL = document.createElement("div"); dimL.className = "crop-dim"; overlayEl.appendChild(dimL);
+  const rectEl = document.createElement("div"); rectEl.className = "crop-rect"; overlayEl.appendChild(rectEl);
+  const handles = {};
+  for (const a of ["nw", "n", "ne", "e", "se", "s", "sw", "w"]) {
+    const h = document.createElement("div");
+    h.className = `crop-handle h-${a}`;
+    h.dataset.anchor = a;
+    h.addEventListener("pointerdown", onCropHandlePointerDown);
+    overlayEl.appendChild(h);
+    handles[a] = h;
+  }
+  return { dimT, dimR, dimB, dimL, rectEl, handles };
+}
+
+function enterCropMode(obj) {
+  if (obj.rotation && Math.abs(obj.rotation) > 0.01) {
+    showActionToast("Crop doesn't support rotated images yet — reset rotation first.", 4500);
+    return;
+  }
+  crop.start({
+    obj,
+    onChange: () => renderOverlay(),
+    onApply: ({ rect }) => doApplyCrop(obj.id, rect),
+    onCancel: () => exitCropMode(),
+  });
+  overlayEl.innerHTML = "";
+  _cropDom = _buildCropDom();
+  cropToolbar.classList.remove("hidden");
+  document.body.dataset.cropMode = "1";
+  renderOverlay();
+}
+
+function exitCropMode() {
+  if (_cropDom) overlayEl.innerHTML = "";
+  _cropDom = null;
+  cropToolbar.classList.add("hidden");
+  delete document.body.dataset.cropMode;
+  renderOverlay();
+}
+
+function doApplyCrop(objId, rect) {
+  const obj = scene.get(objId);
+  if (!obj) { exitCropMode(); return; }
+  const out = crop.applyCropMath(obj, rect);
+  scene.act(() => {
+    scene.update(objId, { x: out.x, y: out.y, w: out.w, h: out.h, crop: out.crop });
+  });
+  exitCropMode();
+}
+
+function renderCropOverlay() {
+  if (!_cropDom) return;
+  const rect = crop.getRect();
+  const bounds = crop.getBounds();
+  if (!rect || !bounds) return;
+  const br = boardEl.getBoundingClientRect();
+  // 把 world 矩形转屏幕 px（相对 overlayEl/boardEl）
+  const r = boardRectToScreen(rect, br);
+  const b = boardRectToScreen(bounds, br);
+  // dim 四块（包住 b 范围、留空 r 范围）
+  _cropDom.dimT.style.left = `${b.x}px`;
+  _cropDom.dimT.style.top = `${b.y}px`;
+  _cropDom.dimT.style.width = `${b.w}px`;
+  _cropDom.dimT.style.height = `${Math.max(0, r.y - b.y)}px`;
+  _cropDom.dimB.style.left = `${b.x}px`;
+  _cropDom.dimB.style.top = `${r.y + r.h}px`;
+  _cropDom.dimB.style.width = `${b.w}px`;
+  _cropDom.dimB.style.height = `${Math.max(0, b.y + b.h - (r.y + r.h))}px`;
+  _cropDom.dimL.style.left = `${b.x}px`;
+  _cropDom.dimL.style.top = `${r.y}px`;
+  _cropDom.dimL.style.width = `${Math.max(0, r.x - b.x)}px`;
+  _cropDom.dimL.style.height = `${r.h}px`;
+  _cropDom.dimR.style.left = `${r.x + r.w}px`;
+  _cropDom.dimR.style.top = `${r.y}px`;
+  _cropDom.dimR.style.width = `${Math.max(0, b.x + b.w - (r.x + r.w))}px`;
+  _cropDom.dimR.style.height = `${r.h}px`;
+  // 边框
+  _cropDom.rectEl.style.left = `${r.x}px`;
+  _cropDom.rectEl.style.top = `${r.y}px`;
+  _cropDom.rectEl.style.width = `${r.w}px`;
+  _cropDom.rectEl.style.height = `${r.h}px`;
+  // 8 handle（screen px 定位，margin-left/top -6px 居中）
+  const cx = r.x + r.w / 2;
+  const cy = r.y + r.h / 2;
+  const right = r.x + r.w;
+  const bot = r.y + r.h;
+  const place = (a, x, y) => {
+    const h = _cropDom.handles[a];
+    h.style.left = `${x}px`;
+    h.style.top = `${y}px`;
+  };
+  place("nw", r.x, r.y);
+  place("n",  cx,  r.y);
+  place("ne", right, r.y);
+  place("e",  right, cy);
+  place("se", right, bot);
+  place("s",  cx,  bot);
+  place("sw", r.x, bot);
+  place("w",  r.x, cy);
+}
+
+function boardRectToScreen(rectWorld, br) {
+  const a = board.worldToScreen(rectWorld.x, rectWorld.y);
+  const b = board.worldToScreen(rectWorld.x + rectWorld.w, rectWorld.y + rectWorld.h);
+  return { x: a.x - br.left, y: a.y - br.top, w: b.x - a.x, h: b.y - a.y };
+}
+
+function onCropHandlePointerDown(ev) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  const anchor = ev.currentTarget.dataset.anchor;
+  const startRect = crop.getRect();
+  const startWorld = board.screenToWorld(ev.clientX, ev.clientY);
+  _cropDragState = { anchor, startRect, startWorld, handleEl: ev.currentTarget };
+  try { ev.currentTarget.setPointerCapture(ev.pointerId); } catch (_) {}
+  ev.currentTarget.addEventListener("pointermove", onCropHandlePointerMove);
+  ev.currentTarget.addEventListener("pointerup", onCropHandlePointerUp);
+  ev.currentTarget.addEventListener("pointercancel", onCropHandlePointerUp);
+}
+function onCropHandlePointerMove(ev) {
+  if (!_cropDragState) return;
+  const s = _cropDragState;
+  const w = board.screenToWorld(ev.clientX, ev.clientY);
+  const dx = w.x - s.startWorld.x;
+  const dy = w.y - s.startWorld.y;
+  let { x, y, w: rw, h: rh } = s.startRect;
+  // 按 anchor 决定哪边动
+  if (s.anchor.includes("n")) { y += dy; rh -= dy; }
+  if (s.anchor.includes("s")) { rh += dy; }
+  if (s.anchor.includes("w")) { x += dx; rw -= dx; }
+  if (s.anchor.includes("e")) { rw += dx; }
+  crop.setRect({ x, y, w: rw, h: rh });
+}
+function onCropHandlePointerUp(ev) {
+  if (!_cropDragState) return;
+  const h = _cropDragState.handleEl;
+  try { h.releasePointerCapture(ev.pointerId); } catch (_) {}
+  h.removeEventListener("pointermove", onCropHandlePointerMove);
+  h.removeEventListener("pointerup", onCropHandlePointerUp);
+  h.removeEventListener("pointercancel", onCropHandlePointerUp);
+  _cropDragState = null;
+}
+
+// 入口：image panel 的 Crop / Reset crop 按钮
+document.getElementById("imgCrop").addEventListener("click", () => {
+  const sel = scene.firstSelected();
+  if (!sel || sel.type !== "image") {
+    showActionToast("Select an image to crop", 3000);
+    return;
+  }
+  enterCropMode(sel);
+});
+document.getElementById("imgResetCrop").addEventListener("click", () => {
+  const sel = scene.firstSelected();
+  if (!sel || sel.type !== "image") return;
+  if (!sel.crop) { showActionToast("No crop to reset"); return; }
+  // Reset crop = obj.w/h 应该恢复到「full image 在当前 scale 下」
+  // 当前 scale = obj.w / sel.crop.w （世界 px per natural px）
+  const sx = sel.w / sel.crop.w;
+  const sy = sel.h / sel.crop.h;
+  const newW = sel.naturalW * sx;
+  const newH = sel.naturalH * sy;
+  // 新 top-left = 当前 top-left - (crop.x * sx, crop.y * sy)
+  const newX = sel.x - sel.crop.x * sx;
+  const newY = sel.y - sel.crop.y * sy;
+  scene.act(() => {
+    scene.update(sel.id, { x: newX, y: newY, w: newW, h: newH, crop: undefined });
+  });
+});
+
+// 底部 toolbar
+document.getElementById("cropApply").addEventListener("click", () => crop.commit());
+document.getElementById("cropCancel").addEventListener("click", () => crop.cancel());
+
+// Enter / Esc 退 crop mode（在 crop mode 才生效）
+window.addEventListener("keydown", (ev) => {
+  if (!crop.isActive()) return;
+  // 忽略 focus 在 input/textarea 的情况
+  const t = ev.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+  if (ev.key === "Enter") { ev.preventDefault(); crop.commit(); }
+  else if (ev.key === "Escape") { ev.preventDefault(); crop.cancel(); }
+}, true);
+
 window.addEventListener("resize", () => renderOverlay());
 
 // ----- viewport 光栅化（按需，只在导出 / 复制剪贴板时跑） -----
@@ -1134,138 +1730,66 @@ function downloadBlob(blob, name) {
 const cloudPill = document.getElementById("cloudPill");
 const cloudLabel = document.getElementById("cloudLabel");
 const cloudPushBtn = document.getElementById("cloudPushBtn");
-const cloudPullBtn = document.getElementById("cloudPullBtn");
 
 function refreshCloudUI() {
   const signedIn = cloud.isSignedIn();
   cloudPushBtn.disabled = !signedIn;
-  cloudPullBtn.disabled = !signedIn;
   // 云端待推：登录中 + 本地比云端新 → push 按钮闪小点（独立于本地保存状态）
   const dirty = signedIn && cloud.isCloudDirty(sessionInput.value);
   cloudPushBtn.classList.toggle("cloud-dirty", dirty);
-  if (dirty) cloudPushBtn.title = "推到 OneDrive（本地有未推送的修改）";
-  else cloudPushBtn.title = "推到 OneDrive（覆盖云端）";
+  if (dirty) cloudPushBtn.title = "Save to cloud — local has un-uploaded changes (Ctrl+S also saves to cloud)";
+  else cloudPushBtn.title = "Save to cloud (Ctrl+S also saves to cloud)";
   if (!cloud.isAuthConfigured()) {
     cloudPill.dataset.state = "disconnected";
-    cloudLabel.textContent = "OneDrive 未配置";
-    cloudPill.title = "需要在 src/config.js 填 CLIENT_ID（Azure App Registration）";
+    cloudLabel.textContent = "OneDrive not configured";
+    cloudPill.title = "Set CLIENT_ID in src/config.js (Azure App Registration)";
     return;
   }
   if (signedIn) {
     const acc = cloud.getActiveAccount();
-    const tag = (acc?.username || acc?.name || "已登录").replace(/@.*/, "");
+    const tag = (acc?.username || acc?.name || "Signed in").replace(/@.*/, "");
     cloudPill.dataset.state = "connected";
     cloudLabel.textContent = `OneDrive · ${tag}`;
-    cloudPill.title = `已登录：${acc?.username || ""}\n点击注销`;
+    cloudPill.title = `Signed in: ${acc?.username || ""}\nClick to sign out`;
   } else {
     cloudPill.dataset.state = "disconnected";
     cloudLabel.textContent = "OneDrive";
-    cloudPill.title = "点击登录 OneDrive";
+    cloudPill.title = "Click to sign in to OneDrive";
   }
 }
 
 cloudPill.addEventListener("click", async () => {
   if (!cloud.isAuthConfigured()) {
-    showActionToast("未配置 OneDrive — 先在 src/config.js 填 CLIENT_ID", 5000);
+    showActionToast("OneDrive not configured — set CLIENT_ID in src/config.js", 5000);
     return;
   }
   if (cloud.isSignedIn()) {
-    if (!confirm("注销 OneDrive？本地数据保留。")) return;
+    if (!confirm("Sign out of OneDrive? Local data is preserved.")) return;
     await cloud.signOut();
     refreshCloudUI();
-    showActionToast("已注销 OneDrive");
+    showActionToast("Signed out of OneDrive");
   } else {
     cloudPill.dataset.state = "connecting";
-    cloudLabel.textContent = "OneDrive · 登录中";
+    cloudLabel.textContent = "OneDrive · signing in";
     try { await cloud.signIn(); /* 跳转登录 */ }
     catch (e) {
       refreshCloudUI();
-      showActionToast(`登录失败：${e.message}`, 4000);
+      showActionToast(`Sign-in failed: ${e.message}`, 4000);
     }
   }
 });
 
-cloudPushBtn.addEventListener("click", async () => {
-  if (!cloud.isSignedIn()) return;
-  cloudPushBtn.disabled = true;
-  showActionToast("推到 OneDrive…", 60000);
-  try {
-    // 先确保 IDB 与即将推送的 zip 一致
-    await saveCurrentSession();
-    const { atlas } = await buildAtlasZip();
-    const name = sessionInput.value || "atlas";
-    const newPath = pathFromInput();
-    const oldCloudPath = _activeCloudPath;
-    const result = await cloud.pushAtlas(name, atlas, {
-      onConflict: (sib) => showActionToast(`云端有新版，你的本地已另存为 ${sib}`, 8000),
-    });
-    if (result.action === "uploaded") {
-      // 重命名了 —— 清理旧云文件（404 自动 no-op）
-      let renamedFrom = null;
-      if (oldCloudPath && oldCloudPath !== newPath) {
-        try {
-          await cloud.deleteAtlas(stemOfPath(oldCloudPath));
-          renamedFrom = oldCloudPath;
-        } catch (e) {
-          console.warn("删旧云文件失败:", e);
-        }
-      }
-      _activeCloudPath = newPath;
-      showActionToast(renamedFrom
-        ? `已推到 OneDrive：${newPath}（删除了旧的 ${renamedFrom}）`
-        : `已推到 OneDrive：${newPath}`);
-    } else if (result.action === "sibling-copy") {
-      // 远端冲突 → 用户的本地保留在 sibling，但*主*文件仍是远端版本，需要 pull
-      if (confirm(`OneDrive 上 ${newPath} 比本地新。\n你的本地已另存为 ${result.siblingName}。\n现在拉远端版本到本地？`)) {
-        await pullFromCloud();
-      }
-    }
-    refreshCloudUI();
-  } catch (e) {
-    showActionToast(`推送失败：${e.message || e}`, 5000);
-  } finally {
-    cloudPushBtn.disabled = !cloud.isSignedIn();
-  }
-});
+// 云按钮 = "完全保存"，走和 Ctrl+S 同一条路径（不分 explicit / 隐式两套）。
+// 不登录时按钮其实 disabled，所以 saveCurrentSession 里的 fallback 不会到 "Saved locally" 这种 toast。
+cloudPushBtn.addEventListener("click", () => saveCurrentSession({ explicit: true }));
 
-async function pullFromCloud() {
-  if (!cloud.isSignedIn()) return;
-  cloudPullBtn.disabled = true;
-  showActionToast("从 OneDrive 拉…", 60000);
-  try {
-    const name = sessionInput.value || "atlas";
-    const result = await cloud.pullAtlas(name);
-    if (!result) {
-      showActionToast(`OneDrive 上没有 ${name}.atlas.zip`, 5000);
-      return;
-    }
-    _loading = true;
-    try { await applyAtlasZipBlob(result.blob); }
-    finally { _loading = false; }
-    await saveCurrentSession();
-    // pull 之后 local == cloud；saveCurrentSession 设了 dirty=true，这里 override 回 false
-    cloud.setCloudDirty(sessionInput.value, false);
-    refreshCloudUI();
-    showActionToast(`已从 OneDrive 拉回：${result.item.name}`);
-  } catch (e) {
-    _loading = false;
-    showActionToast(`拉取失败：${e.message || e}`, 5000);
-  } finally {
-    cloudPullBtn.disabled = !cloud.isSignedIn();
-  }
-}
-
-cloudPullBtn.addEventListener("click", async () => {
-  if (!cloud.isSignedIn()) return;
-  if (_dirty) {
-    if (!confirm("本地有未保存修改，从 OneDrive 拉会覆盖。继续？")) return;
-  }
-  await pullFromCloud();
-});
+// 注：cloudPullBtn 已删（pull 不再是顶栏 first-class 行为）。
+// 进入 cloud-only session 走 gallery 里的 tile 点击 → pullSessionFromCloudAndOpen（拉 + 切到那个 session）。
+// 想「拉云覆盖当前」的场景：在 gallery 里删本地后单击云端 tile 即等价。
 
 // 启动时尝试 MSAL init + 处理可能的 redirect 回调
 cloud.initAuth().then(() => refreshCloudUI()).catch((e) => {
-  console.warn("OneDrive 初始化失败:", e);
+  console.warn("OneDrive init failed:", e);
   refreshCloudUI();
 });
 refreshCloudUI();
@@ -1278,15 +1802,15 @@ btp.onChange(() => {
   btpPill.dataset.state = btp.state;
   if (btp.state === "connected") {
     const fp = (btp.scene && btp.scene.blend_filepath) || "";
-    const base = fp ? fp.split(/[\\/]/).pop() : "(未保存)";
+    const base = fp ? fp.split(/[\\/]/).pop() : "(unsaved)";
     btpLabel.textContent = `Blender · ${base}`;
-    btpPill.title = `已连接到 Blender（点击重新探活）\n${fp || "(未保存的 .blend)"}`;
+    btpPill.title = `Connected to Blender (click to re-probe)\n${fp || "(unsaved .blend)"}`;
   } else if (btp.state === "connecting") {
-    btpLabel.textContent = "Blender · 探活中";
-    btpPill.title = "正在探活…";
+    btpLabel.textContent = "Blender · probing";
+    btpPill.title = "Probing…";
   } else if (btp.state === "disconnected") {
-    btpLabel.textContent = "Blender · 未连接";
-    btpPill.title = `Blender 不可达\n${btp.lastError ? (btp.lastError.message || btp.lastError) : ""}\n点击重试`;
+    btpLabel.textContent = "Blender · disconnected";
+    btpPill.title = `Blender unreachable\n${btp.lastError ? (btp.lastError.message || btp.lastError) : ""}\nClick to retry`;
   } else {
     btpLabel.textContent = "Blender";
   }
@@ -1360,17 +1884,21 @@ loadCurrentSession().then((ok) => {
     _activeIDBPath = path;
     _activeCloudPath = path;
   }
-}).catch((e) => {
+}).catch(async (e) => {
   console.warn("初始加载失败", e);
   // 关键修复：boot 时 apply 失败（最常见 = 加密 session 被取消密码）
   // _activeIDBPath 还指向那个加密 path → 用户随便改一下 → save 会把它当 rename → **删除加密 session** = 数据丢
-  // 重置到 safe default，user 后续 save 不会误删；localStorage currentPath 保留 = 下次 boot 仍试着加载
+  // 对偶 bug：fallback 到「Untitled」如果已被一个真 session 占着 → 用户随手画 → 覆盖那个 session
+  // → 用 findFreshSlotPath 找一个空 slot ("Untitled" / "Untitled 2" / ...)。
+  // localStorage currentPath 保留 = 下次 boot 仍试着加载原来的（让用户能重试）。
   const lastPath = getCurrentPath();
-  const safePath = sessionFileName(DEFAULT_SESSION_NAME);
+  const safePath = await findFreshSlotPath();
   _activeIDBPath = safePath;
   _activeCloudPath = null;
-  if (e && e.message && e.message.includes("已取消")) {
-    showActionToast(`上次会话「${stemOfPath(lastPath)}」需要密码，未加载。在会话列表点「重新打开」重试。`, 8000);
+  sessionInput.value = stemOfPath(safePath);
+  applySessionTitle();
+  if (e && e.message && e.message.includes("cancelled")) {
+    showActionToast(`Last session "${stemOfPath(lastPath)}" needs a password and didn't load. Reopen it from the session list to retry.`, 8000);
   }
 });
 
@@ -1389,23 +1917,189 @@ async function blobToPng(blob) {
 async function copySelectedImageToClipboard() {
   const sel = scene.firstSelected();
   if (!sel || sel.type !== "image") {
-    showActionToast("选中一张图片再 Ctrl+C 复制", 3000);
+    showActionToast("Select an image first, then Ctrl+C to copy", 3000);
     return;
   }
-  if (!sel.blob) { showActionToast("图片数据缺失"); return; }
+  if (!sel.blob) { showActionToast("Image data missing"); return; }
   try {
     const png = await blobToPng(sel.blob);
     await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
-    showActionToast("已复制图片到剪贴板");
+    showActionToast("Copied image to clipboard");
   } catch (e) {
-    showActionToast(`复制失败：${e.message || e}`, 4000);
+    showActionToast(`Copy failed: ${e.message || e}`, 4000);
   }
 }
 
+// 从系统剪贴板读一张图（用于 Ctrl+Shift+V / iPad paste 按钮）。
+// 浏览器 paste 事件路径靠 ev.clipboardData；这里是「不依赖 keypress 的 paste」路径，
+// 用 navigator.clipboard.read() —— 用户首次会有权限提示。
+async function readClipboardImageBlob() {
+  if (!navigator.clipboard || !navigator.clipboard.read) return null;
+  let items;
+  try { items = await navigator.clipboard.read(); }
+  catch (e) { showActionToast(`Clipboard read failed: ${e.message || e}`, 3000); return null; }
+  for (const it of items) {
+    for (const type of it.types) {
+      if (type.startsWith("image/")) {
+        try { return await it.getType(type); } catch (_) {}
+      }
+    }
+  }
+  return null;
+}
+
+// 生成 in-zip 路径："images/<uuid>.<ext>"
+function _newImageSrc(blob) {
+  const ext = (blob.type && blob.type.includes("jpeg")) ? "jpg" : "png";
+  const uid = (typeof crypto !== "undefined" && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return `images/${uid}.${ext}`;
+}
+
+// 「Smart paste」：恰好选中 1 张未锁 image → replace blob（保留几何 / 锁 / interp）；
+// 其它情况（多选 / 选 viewport / 啥都没选 / 选的图锁着）→ 新建图，落画板中心。
+// 两路入口共用：① 浏览器 paste 事件（Ctrl+V）走 onPaste hook，blob + 预测尺寸已有；
+//              ② Paste 按钮 / 触屏走 navigator.clipboard.read()，需要现场量尺寸。
+// undo：scene.act() 包裹，snapshot 浅拷贝包含旧 blob 引用，undo 时旧 blob 还在内存。
+function _pickReplaceTarget() {
+  const sels = Array.from(scene.selection).map((id) => scene.get(id)).filter(Boolean);
+  const imageSels = sels.filter((o) => o.type === "image" && !o.locked);
+  return imageSels.length === 1 ? imageSels[0] : null;
+}
+
+// 入口 1：从 paste 事件来（已有 blob + 测好的尺寸 + 目标中心点）
+function smartPasteFromMeasured({ blob, naturalW, naturalH, x, y, targetLongWorld }) {
+  const target = _pickReplaceTarget();
+  if (target) {
+    scene.act(() => {
+      scene.replaceImageBlob(target.id, blob, _newImageSrc(blob));
+    });
+    showActionToast("Replaced selected image");
+    return;
+  }
+  scene.act(() => {
+    const obj = makeImageObject({ blob, src: _newImageSrc(blob), naturalW, naturalH, x, y, targetLongWorld });
+    scene.add(obj);
+    scene.select(obj.id, false);
+  });
+}
+
+// 入口 2：从 Paste 按钮 / 触屏来（要现场读剪贴板 + 测尺寸）
+async function smartPasteFromClipboard() {
+  const blob = await readClipboardImageBlob();
+  if (!blob) { showActionToast("No image in clipboard", 3000); return; }
+  const target = _pickReplaceTarget();
+  if (target) {
+    scene.act(() => {
+      scene.replaceImageBlob(target.id, blob, _newImageSrc(blob));
+    });
+    showActionToast("Replaced selected image");
+    return;
+  }
+  // 新建路径需要测尺寸 + 算画板中心
+  const tmpUrl = URL.createObjectURL(blob);
+  const img = new Image();
+  let naturalW = 0, naturalH = 0;
+  try {
+    await new Promise((res, rej) => {
+      img.onload = res;
+      img.onerror = () => rej(new Error("Image decode failed"));
+      img.src = tmpUrl;
+    });
+    naturalW = img.naturalWidth;
+    naturalH = img.naturalHeight;
+  } catch (e) {
+    URL.revokeObjectURL(tmpUrl);
+    showActionToast(`Paste failed: ${e.message || e}`, 3000);
+    return;
+  }
+  URL.revokeObjectURL(tmpUrl);
+  if (!naturalW || !naturalH) return;
+  const r = boardEl.getBoundingClientRect();
+  const center = board.screenToWorld(r.left + r.width / 2, r.top + r.height / 2);
+  const dpr = window.devicePixelRatio || 1;
+  const longNat = Math.max(naturalW, naturalH);
+  let targetLong = longNat / dpr;
+  // 宽 AND 高 都不超过视野 2/3
+  const scaleV = board.viewport.scale;
+  const capW = (r.width * 2 / 3) * longNat / (naturalW * scaleV);
+  const capH = (r.height * 2 / 3) * longNat / (naturalH * scaleV);
+  const maxLong = Math.min(capW, capH);
+  if (targetLong > maxLong) targetLong = maxLong;
+  scene.act(() => {
+    const obj = makeImageObject({ blob, src: _newImageSrc(blob), naturalW, naturalH, x: center.x, y: center.y, targetLongWorld: targetLong });
+    scene.add(obj);
+    scene.select(obj.id, false);
+  });
+}
+
+// ----- Eyedropper + Color swatch -----
+// Eyedropper：tool=eyedropper 时点击 image obj → 采该点像素 → 生成 64×64 纯色 swatch 放该位置。
+// 处理完自动回 select 工具，符合一次性采色直觉。
+// Add color swatch（菜单）：弹原生 color picker，确定后用上次或默认色生成 swatch 放视野中心。
+const SWATCH_NATURAL = 64;
+const SWATCH_WORLD = 64; // 世界 px 默认显示大小
+
+async function handleEyedropper({ obj, clientX, clientY }) {
+  // 不管点中啥都回 select（一次性工具）
+  try {
+    if (!obj || obj.type !== "image" || !obj.blob) {
+      showActionToast("Eyedropper: click on an image", 2500);
+      return;
+    }
+    const world = board.screenToWorld(clientX, clientY);
+    const np = worldToNaturalPx(obj, world.x, world.y);
+    const color = await samplePixel(obj.blob, np.x, np.y);
+    const hex = colorToHex(color);
+    await createSwatchAt(color, world.x, world.y);
+    showActionToast(`Sampled ${hex} → swatch`);
+  } catch (e) {
+    console.warn("eyedropper failed", e);
+    showActionToast(`Eyedropper failed: ${e.message || e}`, 4000);
+  } finally {
+    input.setTool("select");
+  }
+}
+
+async function createSwatchAt(color, wx, wy) {
+  const blob = await makeSwatchBlob(color, SWATCH_NATURAL);
+  const src = _newImageSrc(blob);
+  scene.act(() => {
+    const obj = makeImageObject({
+      blob,
+      src,
+      naturalW: SWATCH_NATURAL,
+      naturalH: SWATCH_NATURAL,
+      x: wx - SWATCH_WORLD / 2, // 居中在点击点
+      y: wy - SWATCH_WORLD / 2,
+      targetLongWorld: SWATCH_WORLD,
+    });
+    obj.interp = "nearest"; // swatch 放大缩小都该硬边
+    scene.add(obj);
+    scene.select(obj.id, false);
+  });
+}
+
+// 菜单「Add color swatch…」：native color picker → 视野中心生成 swatch
+const addSwatchColorInput = document.getElementById("addSwatchColorInput");
+document.getElementById("menuAddSwatch").addEventListener("click", () => {
+  closeHamburger();
+  // 点击隐藏的 <input type="color"> 触发系统颜色选择器
+  addSwatchColorInput.click();
+});
+addSwatchColorInput.addEventListener("change", async () => {
+  const color = hexToColor(addSwatchColorInput.value);
+  const r = boardEl.getBoundingClientRect();
+  const center = board.screenToWorld(r.left + r.width / 2, r.top + r.height / 2);
+  await createSwatchAt(color, center.x, center.y);
+  showActionToast(`Added swatch ${colorToHex(color)}`);
+});
+
 // ----- 会话浏览模态 -----
-const sessionsBackdrop = document.getElementById("sessionsBackdrop");
-const sessionsModal = document.getElementById("sessionsModal");
+const sessionsGallery = document.getElementById("sessionsGallery");
 const sessionsList = document.getElementById("sessionsList");
+const galleryCurrentName = document.getElementById("galleryCurrentName");
 const sessionsBreadcrumb = document.getElementById("sessionsBreadcrumb");
 
 let _currentFolder = ""; // 模态内当前查看的子文件夹路径，"" = 根
@@ -1440,7 +2134,16 @@ function renderSessionsBreadcrumb() {
   }
 }
 
+// thumb URL 生命周期：每次 refresh 把旧 URL 全 revoke。
+// 不 revoke 的话每次 refresh 漏 N 个 URL，gallery 多刷几次内存炸。
+let _galleryThumbUrls = [];
+function _revokeGalleryThumbs() {
+  for (const u of _galleryThumbUrls) { try { URL.revokeObjectURL(u); } catch (_) {} }
+  _galleryThumbUrls = [];
+}
+
 async function refreshSessionsList() {
+  _revokeGalleryThumbs();
   sessionsList.innerHTML = "";
   renderSessionsBreadcrumb();
 
@@ -1524,6 +2227,7 @@ function renderSessionFileRow(key, { pkg, inLocal, inCloud, isCurrent }) {
     thumb.textContent = "☁";
   } else if (pkg && pkg.thumb) {
     const url = URL.createObjectURL(pkg.thumb);
+    _galleryThumbUrls.push(url);
     thumb.style.backgroundImage = `url(${url})`;
   }
   row.appendChild(thumb);
@@ -1542,9 +2246,9 @@ function renderSessionFileRow(key, { pkg, inLocal, inCloud, isCurrent }) {
   if (pkg) {
     const t = pkg.updatedAt ? new Date(pkg.updatedAt).toLocaleString() : "—";
     const sizeStr = pkg.atlas ? formatBytes(pkg.atlas.size) : "—";
-    meta.textContent = isCurrent ? `当前 · ${t} · ${sizeStr}` : `${t} · ${sizeStr}`;
+    meta.textContent = isCurrent ? `Current · ${t} · ${sizeStr}` : `${t} · ${sizeStr}`;
   } else if (inCloud) {
-    meta.textContent = "云端，本地无缓存（点打开会下载）";
+    meta.textContent = "Cloud only, no local cache (click to download)";
   }
   body.appendChild(meta);
 
@@ -1552,18 +2256,18 @@ function renderSessionFileRow(key, { pkg, inLocal, inCloud, isCurrent }) {
   const badges = document.createElement("div");
   badges.className = "badges";
   if (inLocal) {
-    const b = document.createElement("span"); b.className = "badge local"; b.textContent = "本地"; badges.appendChild(b);
+    const b = document.createElement("span"); b.className = "badge local"; b.textContent = "Local"; badges.appendChild(b);
   }
   if (inCloud) {
-    const b = document.createElement("span"); b.className = "badge cloud"; b.textContent = "☁ 云端"; badges.appendChild(b);
+    const b = document.createElement("span"); b.className = "badge cloud"; b.textContent = "☁ Cloud"; badges.appendChild(b);
   }
   if (isEncrypted) {
-    const b = document.createElement("span"); b.className = "badge encrypted"; b.textContent = "🔒 加密"; badges.appendChild(b);
+    const b = document.createElement("span"); b.className = "badge encrypted"; b.textContent = "🔒 Encrypted"; badges.appendChild(b);
   }
   if (inLocal && cloud.isAuthConfigured() && cloud.isSignedIn()) {
     const stem = stemOfPath(key);
     if (cloud.isCloudDirty(stem)) {
-      const b = document.createElement("span"); b.className = "badge dirty"; b.textContent = "未推送"; badges.appendChild(b);
+      const b = document.createElement("span"); b.className = "badge dirty"; b.textContent = "Unpushed"; badges.appendChild(b);
     }
   }
   body.appendChild(badges);
@@ -1576,8 +2280,8 @@ function renderSessionFileRow(key, { pkg, inLocal, inCloud, isCurrent }) {
 
   if (inLocal) {
     const cryptBtn = document.createElement("button");
-    cryptBtn.textContent = isEncrypted ? "🔓 取消加密" : "🔒 加密";
-    cryptBtn.title = isEncrypted ? "取消加密（需要原密码 + 强确认）" : "加密（设新密码）";
+    cryptBtn.textContent = isEncrypted ? "🔓 Decrypt" : "🔒 Encrypt";
+    cryptBtn.title = isEncrypted ? "Remove encryption (requires current password + strong consent)" : "Encrypt (set a new password)";
     cryptBtn.addEventListener("click", async (e) => {
       e.stopPropagation();
       if (isEncrypted) await decryptSessionToggle(key, pkg);
@@ -1589,13 +2293,13 @@ function renderSessionFileRow(key, { pkg, inLocal, inCloud, isCurrent }) {
 
   const delBtn = document.createElement("button");
   delBtn.className = "danger";
-  delBtn.textContent = "删除";
+  delBtn.textContent = "Delete";
   delBtn.addEventListener("click", async (e) => {
     e.stopPropagation();
-    const where = inLocal && inCloud ? "本地 + 云端" : (inLocal ? "本地" : "云端");
-    if (!confirm(`删除「${stemOfPath(key)}」(${where})？无法撤销。`)) return;
+    const where = inLocal && inCloud ? "local + cloud" : (inLocal ? "local" : "cloud");
+    if (!confirm(`Delete "${stemOfPath(key)}" (${where})? Cannot be undone.`)) return;
     if (inLocal) {
-      try { await storage.deleteSession(key); } catch (err) { showActionToast(`本地删除失败：${err.message || err}`); }
+      try { await storage.deleteSession(key); } catch (err) { showActionToast(`Local delete failed: ${err.message || err}`); }
     }
     if (inCloud && cloud.isAuthConfigured() && cloud.isSignedIn()) {
       try { await cloud.deleteAtlas(stemOfPath(key)); }
@@ -1609,20 +2313,19 @@ function renderSessionFileRow(key, { pkg, inLocal, inCloud, isCurrent }) {
   actions.appendChild(delBtn);
   row.appendChild(actions);
 
-  // 整行单击 = 打开（actions 里的按钮各自 stopPropagation）。current 行 no-op，避免误碰
-  // 触发 scene.restore 把 undo 栈炸了；用户想退出模态可以点 × / 背景。
-  if (!isCurrent) {
-    row.style.cursor = "pointer";
-    row.addEventListener("click", async () => {
-      try {
-        if (!inLocal && inCloud) await pullSessionFromCloudAndOpen(key);
-        else await openSessionByPath(key);
-        closeSessionsModal();
-      } catch (err) {
-        showActionToast(`打开失败：${err.message || err}`, 4000);
-      }
-    });
-  }
+  // 整 tile 单击 = 打开（actions 里的按钮各自 stopPropagation）。
+  // current tile：点击 = 退出 gallery（已经在编辑此 board，open 是 no-op，只是关 gallery 回画板）。
+  row.style.cursor = "pointer";
+  row.addEventListener("click", async () => {
+    if (isCurrent) { closeSessionsModal(); return; }
+    try {
+      if (!inLocal && inCloud) await pullSessionFromCloudAndOpen(key);
+      else await openSessionByPath(key);
+      closeSessionsModal();
+    } catch (err) {
+      showActionToast(`Open failed: ${err.message || err}`, 4000);
+    }
+  });
 
   return row;
 }
@@ -1630,59 +2333,62 @@ function renderSessionFileRow(key, { pkg, inLocal, inCloud, isCurrent }) {
 // 云端拉一个 session 到 IDB，然后用 openSessionByPath 打开（含密码 prompt 流程）
 async function pullSessionFromCloudAndOpen(path) {
   const stem = stemOfPath(path);
-  showActionToast(`从 OneDrive 拉「${stem}」…`, 60000);
-  const result = await cloud.pullAtlasByPath(path);
-  if (!result) throw new Error(`OneDrive 上没有 ${path}`);
-  // 探测格式，决定 encrypted 标志，并可选地预存 thumb
-  let encrypted = false;
-  let thumb = null;
-  try {
-    const fmt = await detectAtlasFormat(result.blob);
-    encrypted = (fmt === "encrypted");
-    if (!encrypted) {
-      try {
-        const entries = await zipUnpack(result.blob);
-        if (entries["thumb.png"]) {
-          thumb = new Blob([entries["thumb.png"]], { type: "image/png" });
-        }
-      } catch (_) {}
-    }
-  } catch (_) {}
-  await storage.putSession(path, {
-    name: stem,
-    updatedAt: Date.now(),
-    atlas: result.blob,
-    thumb,
-    encrypted,
+  // 下载 + 探测格式 + 写 IDB 阶段：锁 UI（防误触别的 session）
+  await withBusy(`Pulling "${stem}" from OneDrive…`, async () => {
+    const result = await cloud.pullAtlasByPath(path);
+    if (!result) throw new Error(`OneDrive has no ${path}`);
+    // 探测格式，决定 encrypted 标志，并可选地预存 thumb
+    let isEncrypted = false;
+    let thumb = null;
+    try {
+      const fmt = await detectAtlasFormat(result.blob);
+      isEncrypted = (fmt === "encrypted");
+      if (!isEncrypted) {
+        try {
+          const entries = await zipUnpack(result.blob);
+          if (entries["thumb.png"]) {
+            thumb = new Blob([entries["thumb.png"]], { type: "image/png" });
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+    await storage.putSession(path, {
+      name: stem,
+      updatedAt: Date.now(),
+      atlas: result.blob,
+      thumb,
+      encrypted: isEncrypted,
+    });
   });
+  // openSessionByPath 内部会再 prompt 密码 + 自己 withBusy 解密
   await openSessionByPath(path);
-  showActionToast(`已打开：${stem}`);
+  showActionToast(`Opened: ${stem}`);
 }
 
 async function openSessionsModal() {
   // 打开前 flush 一下，让当前 session 出现在列表里且 thumb 最新
   if (_dirty && !_saving) await saveCurrentSession();
   await refreshSessionsList();
-  sessionsModal.classList.remove("hidden");
-  sessionsBackdrop.classList.remove("hidden");
+  galleryCurrentName.value = sessionInput.value;
+  sessionsGallery.classList.remove("hidden");
 }
 
 // ----- 加密 toggle（per-session）-----
 // 加密：读 IDB pkg（未加密直接 zip）→ 解出 entries → 用新密码包成加密 zip → 写回 IDB
 async function encryptSessionToggle(path, pkg) {
-  if (pkg.encrypted) { showActionToast("已经是加密的"); return; }
-  let innerEntries;
-  try { innerEntries = await zipUnpack(pkg.atlas); }
-  catch (e) { showActionToast(`读取失败：${e.message}`, 4000); return; }
-  const pw = await promptNewPassword(`设密码以加密「${stemOfPath(path)}」`);
+  if (pkg.encrypted) { showActionToast("Already encrypted"); return; }
+  const pw = await promptNewPassword(`Set a password to encrypt "${stemOfPath(path)}"`);
   if (!pw) return;
   let newAtlas;
   try {
-    newAtlas = await zipPackEncrypted(
-      Object.entries(innerEntries).map(([p, d]) => ({ path: p, data: d })),
-      pw,
-    );
-  } catch (e) { showActionToast(`加密失败：${e.message}`, 4000); return; }
+    newAtlas = await withBusy(`Encrypting "${stemOfPath(path)}"…`, async () => {
+      const innerEntries = await zipUnpack(pkg.atlas);
+      return await zipPackEncrypted(
+        Object.entries(innerEntries).map(([p, d]) => ({ path: p, data: d })),
+        pw,
+      );
+    });
+  } catch (e) { showActionToast(`Encrypt failed: ${e.message}`, 4000); return; }
   await storage.putSession(path, {
     name: pkg.name,
     updatedAt: Date.now(),
@@ -1698,23 +2404,27 @@ async function encryptSessionToggle(path, pkg) {
     cloud.setCloudDirty(stemOfPath(path), true);
     refreshCloudUI();
   }
-  showActionToast(`已加密：${stemOfPath(path)}（重新打开需要密码）`);
+  showActionToast(`Encrypted: ${stemOfPath(path)} (password required on reopen)`);
 }
 
 // 取消加密：读密码（验证）→ 强 consent → 解出 → 重打成 direct zip → 写回
 async function decryptSessionToggle(path, pkg) {
-  if (!pkg.encrypted) { showActionToast("当前已未加密"); return; }
-  const pw = await promptPassword(`输入「${stemOfPath(path)}」的密码`);
+  if (!pkg.encrypted) { showActionToast("Already unencrypted"); return; }
+  const pw = await promptPassword(`Enter the password for "${stemOfPath(path)}"`);
   if (pw === null) return;
+  // 用密码验证 + 拿 entries（耗时操作，必须锁 UI）
   let innerEntries;
-  try { innerEntries = await zipUnpackEncrypted(pkg.atlas, pw); }
-  catch (e) { showActionToast(`密码错或文件损坏`, 4000); return; }
-  const phrase = "确定取消加密";
+  try {
+    innerEntries = await withBusy(`Verifying password…`, () => zipUnpackEncrypted(pkg.atlas, pw));
+  }
+  catch (e) { showActionToast(`Wrong password or corrupted file`, 4000); return; }
+  // 强 consent（不锁 UI，让 prompt 显示）
+  const phrase = "I confirm decrypt";
   const ok = await confirmTypePhrase(
     phrase,
-    `输入 "${phrase}" 确认\n\n取消加密后，画板内容会以明文存入 IndexedDB（以及推送后的 OneDrive）。任何拿到这台设备 / 网盘账户的人都能看到。\n\n继续？`,
+    `Type "${phrase}" to confirm.\n\nAfter decrypting, the board content will be stored as plaintext in IndexedDB (and in OneDrive after push). Anyone with access to this device / cloud account will be able to read it.\n\nContinue?`,
   );
-  if (!ok) { showActionToast("未确认，已取消"); return; }
+  if (!ok) { showActionToast("Not confirmed, cancelled"); return; }
   // 提取 thumb（若内层有）
   let thumb = null;
   if (innerEntries["thumb.png"]) {
@@ -1722,8 +2432,10 @@ async function decryptSessionToggle(path, pkg) {
   }
   let newAtlas;
   try {
-    newAtlas = await zipPack(Object.entries(innerEntries).map(([p, d]) => ({ path: p, data: d })));
-  } catch (e) { showActionToast(`打包失败：${e.message}`, 4000); return; }
+    newAtlas = await withBusy(`Decrypting "${stemOfPath(path)}"…`, () =>
+      zipPack(Object.entries(innerEntries).map(([p, d]) => ({ path: p, data: d })))
+    );
+  } catch (e) { showActionToast(`Re-pack failed: ${e.message}`, 4000); return; }
   await storage.putSession(path, {
     name: pkg.name,
     updatedAt: Date.now(),
@@ -1739,26 +2451,35 @@ async function decryptSessionToggle(path, pkg) {
     cloud.setCloudDirty(stemOfPath(path), true);
     refreshCloudUI();
   }
-  showActionToast(`已取消加密：${stemOfPath(path)}`);
+  showActionToast(`Decrypted: ${stemOfPath(path)}`);
 }
 function closeSessionsModal() {
-  sessionsModal.classList.add("hidden");
-  sessionsBackdrop.classList.add("hidden");
+  sessionsGallery.classList.add("hidden");
+  _revokeGalleryThumbs();
 }
 
-document.getElementById("sessionsButton").addEventListener("click", () => openSessionsModal());
+// gallery 里的「正在编辑」名字框：双向同步顶栏 sessionInput（顶栏被 gallery 覆盖看不到）。
+// 改名是 destructive op，但只是把 sessionInput.value 改了 —— 下次 save 走 IDB rename
+// path（saveCurrentSession 检测 oldPath != newPath → del 旧）。和 ghost-current-path 修复
+// 兼容（_activeIDBPath 是 actually-loaded path，不是 input 的）。
+galleryCurrentName.addEventListener("input", () => {
+  sessionInput.value = galleryCurrentName.value;
+  // 让 cloud-dirty 跟着新名重算（旧名 cloud-dirty 状态不变，新名按默认 dirty）
+  refreshCloudUI();
+});
+
+document.getElementById("menuSessions").addEventListener("click", () => { closeHamburger(); openSessionsModal(); });
 document.getElementById("sessionsCloseBtn").addEventListener("click", closeSessionsModal);
 document.getElementById("sessionsRefreshBtn").addEventListener("click", refreshSessionsList);
-sessionsBackdrop.addEventListener("click", closeSessionsModal);
 document.getElementById("sessionsNewBtn").addEventListener("click", async () => {
   // 默认在当前文件夹下新建
-  const defaultText = _currentFolder ? `${_currentFolder}/未命名` : "未命名";
-  const name = prompt("新会话路径（可带 / 组织到子文件夹，如 characters/wall）", defaultText);
+  const defaultText = _currentFolder ? `${_currentFolder}/Untitled` : "Untitled";
+  const name = prompt("New board path (use / for subfolders, e.g. characters/wall)", defaultText);
   if (!name) return;
   const path = sessionFileName(name);
   const existing = await storage.getSession(path);
   if (existing) {
-    if (!confirm(`${path} 已存在。打开它？`)) return;
+    if (!confirm(`${path} already exists. Open it?`)) return;
     await openSessionByPath(path);
     closeSessionsModal();
     return;

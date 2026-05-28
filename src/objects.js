@@ -7,8 +7,15 @@
 // 命中：input.js 用 ev.target 走 DOM，不用 hitTest（保留代码以备多选 marquee 等）。
 // viewport 的 .obj 设 pointer-events: none，只有 4 条 .vp-edge 边带接 click → 实现「边框选择」。
 
-let _idSeq = 0;
-const nextId = () => `o${++_idSeq}`;
+// id 用 UUID。早期版本用 `o${++_idSeq}`，但 _idSeq 是模块级 + 刷新归零，
+// 一旦从 zip load 进已有 "o1"，再 add 新 obj 就 nextId() == "o1" 撞 id ——
+// 撞 id 后：scene.objects 覆盖、DOM 多兄弟节点、snapshot 读 DOM 拿到 dupes、save 写脏 scene.json
+//   → 整张图最后 imageOrder/viewportOrder 全是同一个 id，俗称「炸板」。
+// UUID 跨 session 唯一，根本性根除。
+const nextId = () => {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+};
 
 const MAX_UNDO = 100;
 
@@ -151,6 +158,9 @@ export class Scene {
 
   add(obj) {
     if (!obj.id) obj.id = nextId();
+    // 防御：撞已存在 id 时强制换新 id（早期 _idSeq 撞 id 把场景炸过；
+    // 现在用 UUID 概率为 0，但留 guard 防 hand-crafted obj / 反序列化 bug）
+    while (this.objects.has(obj.id)) obj.id = nextId();
     this.objects.set(obj.id, obj);
     const node = this._renderNode(obj);
     this.nodes.set(obj.id, node);
@@ -179,6 +189,27 @@ export class Scene {
     if (!obj) return;
     Object.assign(obj, patch);
     this._applyTransform(obj);
+    if (this._actSnap) this._actDirty = true;
+    this._emit();
+  }
+
+  // 替换 image obj 的 blob（保留 id / x / y / w / h / rotation / lock / interp 等几何 & flags）。
+  // 用于 paste-replace（WebPaint roundtrip）、rasterize bake 等场景。
+  // 旧 URL 立即 revoke，新 URL 懒生成 + 把现存 <img src> 立刻更新。
+  replaceImageBlob(id, blob, src) {
+    const obj = this.objects.get(id);
+    if (!obj || obj.type !== "image") return;
+    if (obj._displayUrl) {
+      try { URL.revokeObjectURL(obj._displayUrl); } catch (_) {}
+    }
+    obj.blob = blob;
+    obj.src = src;
+    obj._displayUrl = URL.createObjectURL(blob);
+    const node = this.nodes.get(id);
+    if (node) {
+      const img = node.querySelector("img");
+      if (img) img.src = obj._displayUrl;
+    }
     if (this._actSnap) this._actDirty = true;
     this._emit();
   }
@@ -331,7 +362,27 @@ export class Scene {
       if (label) label.textContent = obj.binding || "";
     } else if (obj.type === "image") {
       const img = el.querySelector("img");
-      if (img) img.style.imageRendering = obj.interp === "nearest" ? "pixelated" : "auto";
+      if (img) {
+        img.style.imageRendering = obj.interp === "nearest" ? "pixelated" : "auto";
+        // 非破坏裁切：obj.crop 设定 → img 绝对定位 + 放大 + 偏移，让 crop 区域正好填满 .obj
+        if (obj.crop) {
+          const naturalW = obj.naturalW || 1;
+          const naturalH = obj.naturalH || 1;
+          const sx = obj.w / obj.crop.w;
+          const sy = obj.h / obj.crop.h;
+          img.style.position = "absolute";
+          img.style.width = `${naturalW * sx}px`;
+          img.style.height = `${naturalH * sy}px`;
+          img.style.left = `${-obj.crop.x * sx}px`;
+          img.style.top = `${-obj.crop.y * sy}px`;
+        } else {
+          img.style.position = "";
+          img.style.width = "100%";
+          img.style.height = "100%";
+          img.style.left = "";
+          img.style.top = "";
+        }
+      }
     }
   }
 }

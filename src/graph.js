@@ -97,7 +97,7 @@ export async function downloadItemBlob(itemId) {
   const dl = metaJson["@microsoft.graph.downloadUrl"];
   if (dl) {
     const r = await fetch(dl);
-    if (!r.ok) throw new Error(`downloadUrl 失败 ${r.status}`);
+    if (!r.ok) throw new Error(`downloadUrl failed ${r.status}`);
     return await r.blob();
   }
   const r = await graphFetch("GET", `/me/drive/items/${itemId}/content`);
@@ -148,7 +148,7 @@ export async function uploadFileToApproot(path, blob, contentType = "application
       body: chunk,
     });
     if (!r.ok && r.status !== 202) {
-      const err = new Error(`chunked upload 失败 ${r.status}`);
+      const err = new Error(`chunked upload failed ${r.status}`);
       err.status = r.status;
       throw err;
     }

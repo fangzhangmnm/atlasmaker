@@ -52,12 +52,22 @@ export function setCloudDirty(sessionName, dirty) {
 
 export { isAuthConfigured, initAuth, signIn, signOut, getActiveAccount, isSignedIn };
 
+// 412 冲突错误类型 —— app 层 catch 这个 → 提示用户改名后再推（不自动 sibling-copy）。
+// 之前（0.9.2-）走 sibling-copy 自动生成 `<name> 1`，但「不在用户预期里多出一个文件」对低频
+// 大颗粒操作（atlas 一会儿一推）是 surprise；改成「停下，让用户在 gallery 里改名」更直接。
+export class CloudConflictError extends Error {
+  constructor(sessionName) {
+    super(`OneDrive has a newer version of "${sessionName}". Rename your session and save again, or pull the cloud version into a new local session.`);
+    this.name = "CloudConflictError";
+    this.sessionName = sessionName;
+    this.status = 412;
+  }
+}
+
 // ----- push 当前 session 到 OneDrive -----
-// onConflict(siblingName) 在 sibling-copy 后回调，由 app 决定怎么 toast / 提示用户重新加载。
-//
-// 返回 { action: "uploaded" | "sibling-copy", siblingName?, item }
-export async function pushAtlas(sessionName, atlasBlob, { onConflict } = {}) {
-  if (!isSignedIn()) throw new Error("尚未登录 OneDrive");
+// 返回 { action: "uploaded", item } 成功。412 抛 CloudConflictError；其它错误原样抛。
+export async function pushAtlas(sessionName, atlasBlob) {
+  if (!isSignedIn()) throw new Error("Not signed in to OneDrive");
   const path = sessionFileName(sessionName);
   const knownETag = getKnownETag(sessionName);
   try {
@@ -69,41 +79,15 @@ export async function pushAtlas(sessionName, atlasBlob, { onConflict } = {}) {
     setCloudDirty(sessionName, false);
     return { action: "uploaded", item };
   } catch (e) {
-    if (e.status !== 412) throw e;
-    // 冲突 → sibling-copy
-    const sibling = await handleConflictSiblingCopy(sessionName, atlasBlob);
-    if (onConflict) onConflict(sibling.siblingName);
-    return sibling;
+    if (e.status === 412) throw new CloudConflictError(sessionName);
+    throw e;
   }
-}
-
-// ----- sibling-copy 子程序 -----
-async function handleConflictSiblingCopy(sessionName, ourAtlasBlob) {
-  // 1. 把*我们的*内容推到 sibling（防止丢，先做这一步）
-  let siblingItem = null;
-  let siblingName = null;
-  for (let n = 1; n < 50; n++) {
-    const candidate = sessionFileName(`${sessionName} ${n}`);
-    try {
-      siblingItem = await uploadFileToApproot(candidate, ourAtlasBlob, ZIP_CT, { conflictBehavior: "fail" });
-      siblingName = candidate;
-      break;
-    } catch (e) {
-      if (e.status === 409) continue; // 这个名也被占了 → 下一个
-      throw e;
-    }
-  }
-  if (!siblingItem) throw new Error("没法腾出 sibling 名（试了 50 个）");
-  // 2. 同步本地 eTag：sessionName 主文件的新 eTag 要 re-fetch（remote 比我们新）
-  const remoteMeta = await getItemByPath(sessionFileName(sessionName));
-  if (remoteMeta) setKnownETag(sessionName, remoteMeta.eTag);
-  return { action: "sibling-copy", siblingName, item: siblingItem, remoteMeta };
 }
 
 // ----- pull 远端 session（覆盖本地） -----
 // 返回 { blob, item } —— app 负责 applyAtlasZipBlob + saveCurrentSession。
 export async function pullAtlas(sessionName) {
-  if (!isSignedIn()) throw new Error("尚未登录 OneDrive");
+  if (!isSignedIn()) throw new Error("Not signed in to OneDrive");
   const path = sessionFileName(sessionName);
   const item = await getItemByPath(path);
   if (!item) return null;
@@ -145,7 +129,7 @@ async function _walkApproot(subpath, out, depth = 0) {
 
 // 拉指定路径的 atlas（含子文件夹路径，例如 "characters/wall.atlas.zip"）
 export async function pullAtlasByPath(path) {
-  if (!isSignedIn()) throw new Error("尚未登录 OneDrive");
+  if (!isSignedIn()) throw new Error("Not signed in to OneDrive");
   const item = await getItemByPath(path);
   if (!item) return null;
   const blob = await downloadItemBlob(item.id);

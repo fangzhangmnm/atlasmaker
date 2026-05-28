@@ -39,11 +39,11 @@ async function loadScriptWithRetry(url, attempts = 3) {
     try { await loadScript(url); return; }
     catch (e) {
       lastErr = e;
-      console.warn(`MSAL 第 ${i + 1}/${attempts} 次加载失败`);
+      console.warn(`MSAL load attempt ${i + 1}/${attempts} failed`);
       if (i < attempts - 1) await new Promise((r) => setTimeout(r, 300 * (i + 1)));
     }
   }
-  throw new Error(`MSAL 加载失败 ${url}: ${lastErr?.message}`);
+  throw new Error(`MSAL load failed ${url}: ${lastErr?.message}`);
 }
 
 function loadMsal() {
@@ -53,7 +53,7 @@ function loadMsal() {
     await loadScriptWithRetry(MSAL_URL);
     if (window.msal) return window.msal;
     msalLoadPromise = null;
-    throw new Error("MSAL 加载完但 window.msal 没出现");
+    throw new Error("MSAL loaded but window.msal didn't appear");
   })().catch((e) => { msalLoadPromise = null; throw e; });
   return msalLoadPromise;
 }
@@ -120,7 +120,7 @@ export async function signOut() {
 }
 
 export async function getToken() {
-  if (!pca || !activeAccount) throw new Error("尚未登录");
+  if (!pca || !activeAccount) throw new Error("Not signed in");
   try {
     const result = await pca.acquireTokenSilent({ scopes: SCOPES, account: activeAccount });
     return result.accessToken;

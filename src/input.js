@@ -54,8 +54,14 @@ export class Input {
 
   _onPointerDown = (ev) => {
     this.boardEl.setPointerCapture(ev.pointerId);
+    // Crop 模式期间锁住普通 scene 交互（pan / 选择 / marquee 都禁）。
     // 中键 / 空格 → pan，无论当前工具
     const wantPan = ev.button === MIDDLE_BTN || (ev.buttons & MIDDLE_MASK) || this._effectiveTool() === "hand";
+    if (document.body.dataset.cropMode === "1") {
+      // crop handles 自己 stopPropagation；这里到达的都是非 handle 点击（背景 / 别的 obj）
+      // 允许 pan（中键 / 空格），其它一律忽略，防误选误清
+      if (!wantPan) return;
+    }
     if (wantPan) {
       this._panState = {
         startX: ev.clientX, startY: ev.clientY,
@@ -69,6 +75,20 @@ export class Input {
     if (this.tool === "viewport") {
       const w = this.board.screenToWorld(ev.clientX, ev.clientY);
       this._marqueeState = { x0: w.x, y0: w.y, node: null, label: null, lastDx: 0, lastDy: 0 };
+      return;
+    }
+    // eyedropper 工具：单击采色 + 生成 swatch。处理完自动回 select 工具。
+    if (this.tool === "eyedropper") {
+      let elE = ev.target;
+      while (elE && elE !== this.boardEl && !(elE.classList && elE.classList.contains("obj"))) {
+        elE = elE.parentElement;
+      }
+      const hitObjE = (elE && elE.classList && elE.classList.contains("obj"))
+        ? this.scene.get(elE.dataset.id)
+        : null;
+      if (this.hooks.onEyedropper) {
+        this.hooks.onEyedropper({ obj: hitObjE, clientX: ev.clientX, clientY: ev.clientY });
+      }
       return;
     }
     // select 工具：用 ev.target 走 DOM —— viewport 的 pointer-events: none 自动让点穿透到图，
@@ -274,7 +294,22 @@ export class Input {
 
   _onKeyDown = (ev) => {
     const tgt = ev.target;
-    if (tgt && (tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA" || tgt.isContentEditable)) return;
+    const inInput = tgt && (tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA" || tgt.isContentEditable);
+    // Ctrl+S / Ctrl+Shift+S 在 input-focus guard **之前**处理：
+    // 永远 preventDefault（避免浏览器弹「保存网页」对话框），永远 call hook —— hook 内部
+    // 会判 _loading / _saving 决定要不要真存（密码 dialog / boot apply 期间会 refuse）。
+    // 用户在 sessionInput / galleryCurrentName 改名时按 Ctrl+S 也应该保存（保存名字改动），合理。
+    // 用户在密码 dialog 按 Ctrl+S → hook 看到 _loading=true → refuse + toast。
+    if ((ev.ctrlKey || ev.metaKey) && (ev.key === "s" || ev.key === "S")) {
+      ev.preventDefault();
+      if (ev.shiftKey) {
+        if (this.hooks.onSaveLocal) this.hooks.onSaveLocal();
+      } else {
+        if (this.hooks.onSave) this.hooks.onSave();
+      }
+      return;
+    }
+    if (inInput) return;
     if (ev.key === HAND_KEY && !this._spaceHeld) {
       this._spaceHeld = true;
       document.body.dataset.tool = "hand";
@@ -324,16 +359,12 @@ export class Input {
       ev.preventDefault();
       return;
     }
-    // Ctrl+S 立刻保存（避开浏览器「保存网页」默认）
-    if ((ev.ctrlKey || ev.metaKey) && (ev.key === "s" || ev.key === "S") && !ev.shiftKey) {
-      if (this.hooks.onSave) this.hooks.onSave();
-      ev.preventDefault();
-      return;
-    }
+    // 注：Ctrl+S / Ctrl+Shift+S 已在顶部 input-focus guard 之前处理（永远 preventDefault）。
     // 单字符工具切换（V 已经被 Ctrl+V 占用 → 不再绑 V 作工具，select 是默认）
     if (ev.key === "h" || ev.key === "H") this.setTool("hand");
     else if (ev.key === "r" || ev.key === "R") this.setTool("viewport");
     else if (ev.key === "s" || ev.key === "S") this.setTool("select");
+    else if (ev.key === "i" || ev.key === "I") this.setTool("eyedropper");
     else if (ev.key === "0") { if (this.hooks.onFit) this.hooks.onFit(); }
     else if (ev.key === "Escape") { this.scene.clearSelection(); if (this.hooks.onEscape) this.hooks.onEscape(); }
   };
@@ -383,10 +414,13 @@ export class Input {
     // DPI 校正：让 1 世界 px = 1 物理屏幕 px。
     // Win+Shift+S 之类截屏是物理像素，在 1.5x 显示器上不校正会被放大成 1.5 倍 CSS px。
     const dpr = window.devicePixelRatio || 1;
-    let targetLong = Math.max(naturalW, naturalH) / dpr;
-    // 安全帽：再大不超过当前视野短边的 90%（防止 4K 截屏一来塞满视野）
+    const longNat = Math.max(naturalW, naturalH);
+    let targetLong = longNat / dpr;
+    // 安全帽：粘进来后宽 AND 高都不超过当前视野的 2/3（防 4K 大图 / 长图塞满视野）
     const scale = this.board.viewport.scale;
-    const maxLong = Math.min(r.width, r.height) / scale * 0.9;
+    const capW = (r.width * 2 / 3) * longNat / (naturalW * scale);
+    const capH = (r.height * 2 / 3) * longNat / (naturalH * scale);
+    const maxLong = Math.min(capW, capH);
     if (targetLong > maxLong) targetLong = maxLong;
     if (this.onPaste) {
       this.onPaste({

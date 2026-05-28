@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN" data-theme="auto">
+<html lang="en" data-theme="auto">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
@@ -15,7 +15,7 @@
           }
         } catch (_) {}
       })();
-      // PC 也兜个底：任何脚本错误顶上糊一条红条
+      // Sticky error bar for uncaught errors (no devtools on iPad / can't always have console open)
       (function () {
         function show(text) {
           var bar = document.getElementById("__errBar");
@@ -26,11 +26,11 @@
             bar.addEventListener("click", function () { bar.remove(); });
             (document.body || document.documentElement).appendChild(bar);
           }
-          bar.textContent = "⚠ " + text + "  (点击关闭)";
+          bar.textContent = "⚠ " + text + "  (click to dismiss)";
         }
         window.__am_showFatal = show;
         window.addEventListener("error", function (e) {
-          var m = (e && e.message) || (e && e.error && (e.error.message || String(e.error))) || "脚本错误";
+          var m = (e && e.message) || (e && e.error && (e.error.message || String(e.error))) || "script error";
           var src = e && e.filename ? " (" + e.filename.split("/").pop() + ":" + e.lineno + ")" : "";
           show(m + src);
         });
@@ -63,15 +63,15 @@
 
     <!-- 顶栏 -->
     <header class="top-bar" id="topBar">
-      <input id="sessionName" class="session-name" type="text" value="未命名" placeholder="未命名" aria-label="会话名" />
-      <span id="saveStatus" class="save-status" title="自动保存到本地（Ctrl+S 立即）">已保存</span>
-      <div class="tool-group" role="group" aria-label="工具">
-        <button class="tool" id="toolSelect" type="button" data-tool="select" aria-pressed="true" title="选择 (V)">
+      <input id="sessionName" class="session-name" type="text" value="Untitled" placeholder="Untitled" aria-label="Session name" />
+      <span id="saveStatus" class="save-status" title="Auto-saved locally (Ctrl+S for immediate)">Saved</span>
+      <div class="tool-group" role="group" aria-label="Tools">
+        <button class="tool" id="toolSelect" type="button" data-tool="select" aria-pressed="true" title="Select (V)">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M5 3l14 8-6 2-2 6L5 3z"></path>
           </svg>
         </button>
-        <button class="tool" id="toolHand" type="button" data-tool="hand" title="平移 (H / Space)">
+        <button class="tool" id="toolHand" type="button" data-tool="hand" title="Pan (H / Space)">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M18 11V6a2 2 0 0 0-4 0v5"></path>
             <path d="M14 10V4a2 2 0 0 0-4 0v6"></path>
@@ -79,7 +79,7 @@
             <path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-1-5.6-2.8l-3.4-5.4a2 2 0 0 1 3.4-2L8 14"></path>
           </svg>
         </button>
-        <button class="tool" id="toolViewport" type="button" data-tool="viewport" title="新建 viewport（拖框框出输出范围，R）">
+        <button class="tool" id="toolViewport" type="button" data-tool="viewport" title="New viewport (drag to frame output, R)">
           <!-- 虚线框 + 角标，区别于「实心矩形」 -->
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M4 8V5h3M20 8V5h-3M4 16v3h3M20 16v3h-3" />
@@ -87,9 +87,23 @@
             <path d="M12 11v2" />
           </svg>
         </button>
+        <button class="tool" id="toolEyedropper" type="button" data-tool="eyedropper" title="Eyedropper (I) — click any image to sample its color into a swatch">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M14 6l4 4"></path>
+            <path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L12 14l-4 1 1-4 7.5-7.5z"></path>
+            <path d="M8 15l-4 4-1 3 3-1 4-4"></path>
+          </svg>
+        </button>
       </div>
 
-      <button class="tool" id="fitButton" type="button" title="适应所有 (0)">
+      <button class="tool" id="pasteButton" type="button" title="Paste from clipboard (Ctrl+V — replaces selected image, or inserts new)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M9 4h6a1 1 0 0 1 1 1v1h2a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h2V5a1 1 0 0 1 1-1z"></path>
+          <path d="M9 6h6"></path>
+        </svg>
+      </button>
+
+      <button class="tool" id="fitButton" type="button" title="Fit all (0)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <rect x="3" y="3" width="18" height="18" rx="1"></rect>
           <path d="M3 8h4M3 16h4M8 3v4M16 3v4M3 8L8 3M3 16l5 5M21 8L16 3M21 16l-5 5"></path>
@@ -98,38 +112,25 @@
 
       <div class="spacer"></div>
 
-      <button class="btp-pill" id="btpPill" type="button" title="Blender 连接状态（点击重试）">
+      <button class="btp-pill" id="btpPill" type="button" title="Blender connection (click to retry)">
         <span class="btp-dot" aria-hidden="true"></span>
         <span class="btp-label" id="btpLabel">Blender</span>
       </button>
 
-      <button class="btp-pill" id="cloudPill" type="button" title="OneDrive（点击登录 / 注销）">
+      <button class="btp-pill" id="cloudPill" type="button" title="OneDrive (click to sign in / out)">
         <span class="btp-dot" aria-hidden="true"></span>
         <span class="btp-label" id="cloudLabel">OneDrive</span>
       </button>
-      <button class="tool" id="cloudPushBtn" type="button" title="推到 OneDrive（覆盖云端）" disabled>
+      <button class="tool" id="cloudPushBtn" type="button" title="Push to OneDrive (overwrite cloud)" disabled>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M18 10h-1.3A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path>
           <polyline points="8 13 12 9 16 13"></polyline>
           <line x1="12" y1="9" x2="12" y2="17"></line>
         </svg>
       </button>
-      <button class="tool" id="cloudPullBtn" type="button" title="从 OneDrive 拉（用云端覆盖本地）" disabled>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M18 10h-1.3A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path>
-          <polyline points="8 13 12 17 16 13"></polyline>
-          <line x1="12" y1="17" x2="12" y2="9"></line>
-        </svg>
-      </button>
-
-      <button class="tool" id="sessionsButton" type="button" title="会话浏览（多 session + 子文件夹）">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"></path>
-        </svg>
-      </button>
       <input id="importFile" type="file" accept=".zip,application/zip" hidden />
 
-      <button class="tool" id="hamburgerBtn" type="button" title="更多" aria-haspopup="menu" aria-expanded="false">
+      <button class="tool" id="hamburgerBtn" type="button" title="More" aria-haspopup="menu" aria-expanded="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <line x1="4" y1="7"  x2="20" y2="7"></line>
           <line x1="4" y1="12" x2="20" y2="12"></line>
@@ -139,13 +140,32 @@
     </header>
 
     <!-- 汉堡下拉菜单（不常用的功能塞这里） -->
-    <div id="hamburgerMenu" class="dropdown-menu hidden" role="menu" aria-label="更多操作">
+    <div id="hamburgerMenu" class="dropdown-menu hidden" role="menu" aria-label="More actions">
+      <button class="menu-item" id="menuSessions" type="button" role="menuitem">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"></path>
+        </svg>
+        <span>Browse boards…</span>
+      </button>
+      <div class="menu-sep" role="separator"></div>
       <button class="menu-item" id="menuTheme" type="button" role="menuitem">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
         </svg>
-        <span id="menuThemeLabel">主题：自动</span>
+        <span id="menuThemeLabel">Theme: Auto</span>
       </button>
+      <div class="menu-sep" role="separator"></div>
+      <button class="menu-item" id="menuAddSwatch" type="button" role="menuitem">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="13.5" cy="6.5" r=".5" fill="currentColor"></circle>
+          <circle cx="17.5" cy="10.5" r=".5" fill="currentColor"></circle>
+          <circle cx="8.5" cy="7.5" r=".5" fill="currentColor"></circle>
+          <circle cx="6.5" cy="12.5" r=".5" fill="currentColor"></circle>
+          <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.5-.7 1.5-1.5 0-.4-.16-.76-.4-1-.27-.27-.43-.63-.43-1 0-.84.66-1.5 1.5-1.5H16c3.31 0 6-2.69 6-6 0-5.5-4.5-9-10-9z"></path>
+        </svg>
+        <span>Add color swatch…</span>
+      </button>
+      <input id="addSwatchColorInput" type="color" hidden value="#8a481e">
       <div class="menu-sep" role="separator"></div>
       <button class="menu-item" id="menuImport" type="button" role="menuitem">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -153,7 +173,7 @@
           <polyline points="17 8 12 3 7 8"></polyline>
           <line x1="12" y1="3" x2="12" y2="15"></line>
         </svg>
-        <span>导入 atlas zip…</span>
+        <span>Import atlas zip…</span>
       </button>
       <button class="menu-item" id="menuExport" type="button" role="menuitem">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -161,7 +181,7 @@
           <polyline points="7 10 12 15 17 10"></polyline>
           <line x1="12" y1="15" x2="12" y2="3"></line>
         </svg>
-        <span>导出当前 atlas zip</span>
+        <span>Export current atlas zip</span>
       </button>
     </div>
 
@@ -169,85 +189,134 @@
     <div class="hud" id="hud">
       <span id="zoomLabel">100%</span>
       <span class="sep" aria-hidden="true">·</span>
-      <span id="countLabel">0 项</span>
+      <span id="countLabel">0 items</span>
       <span class="sep" aria-hidden="true">·</span>
-      <span id="statusLabel">空白工作台 — Ctrl+V 粘贴图片</span>
+      <span id="sizeLabel" title="Estimated atlas size (sum of image bytes; near-equal to saved .atlas.zip)">0 B</span>
+      <span class="sep" aria-hidden="true">·</span>
+      <span id="statusLabel">Empty board — Ctrl+V to paste an image</span>
       <span class="sep" aria-hidden="true">·</span>
       <span id="versionLabel" class="version">v?</span>
     </div>
 
     <!-- viewport 属性浮窗（选中 viewport 时显示） -->
-    <div id="viewportPanel" class="float-panel hidden" role="dialog" aria-label="viewport 属性">
+    <div id="viewportPanel" class="float-panel hidden" role="dialog" aria-label="Viewport properties">
       <div class="float-panel-head">
         <span class="float-panel-title">Viewport</span>
-        <button id="viewportPanelClose" class="close-x" type="button" aria-label="关闭">×</button>
+        <button id="viewportPanelClose" class="close-x" type="button" aria-label="Close">×</button>
       </div>
       <div class="float-panel-body">
-        <label class="row"><span class="row-label">分辨率</span>
+        <label class="row"><span class="row-label">Resolution</span>
           <input id="vpResW" type="number" min="1" max="8192" step="1" value="1024" />
           <span class="row-sep">×</span>
           <input id="vpResH" type="number" min="1" max="8192" step="1" value="1024" />
-          <button id="vpLock" class="lock-btn" type="button" aria-pressed="false" title="锁定 viewport：禁止拖 / 转 / 缩">🔓</button>
+          <button id="vpLock" class="lock-btn" type="button" aria-pressed="false" title="Lock viewport: prevent move / rotate / resize">🔓</button>
         </label>
-        <label class="row"><span class="row-label">插值</span>
+        <label class="row"><span class="row-label">Interp</span>
           <select id="vpInterp">
-            <option value="linear">线性（默认）</option>
-            <option value="nearest">最近（像素画）</option>
+            <option value="linear">Linear (default)</option>
+            <option value="nearest">Nearest (pixel art)</option>
           </select>
         </label>
-        <label class="row"><span class="row-label">绑定</span>
-          <input id="vpBinding" type="text" list="btpTextureList" placeholder="Blender texture 名（留空 = 不绑）" autocomplete="off" />
+        <label class="row"><span class="row-label">Binding</span>
+          <input id="vpBinding" type="text" list="btpTextureList" placeholder="Blender texture name (blank = unbound)" autocomplete="off" />
           <datalist id="btpTextureList"></datalist>
         </label>
         <div class="row">
-          <button class="sheet-action" id="vpPush" type="button" title="按当前 binding 推送：存在就 PUT 覆盖，不存在就 POST 新建">推到 Blender</button>
+          <button class="sheet-action" id="vpPush" type="button" title="Push by current binding: PUT if texture exists, POST to create otherwise">Push to Blender</button>
         </div>
         <div class="row z-row">
-          <button class="z-btn" id="vpZTop" type="button" title="顶层 (Ctrl+Shift+])">⤒</button>
-          <button class="z-btn" id="vpZUp" type="button" title="上移 (Ctrl+])">↑</button>
-          <button class="z-btn" id="vpZDown" type="button" title="下移 (Ctrl+[)">↓</button>
-          <button class="z-btn" id="vpZBottom" type="button" title="底层 (Ctrl+Shift+[)">⤓</button>
+          <button class="z-btn" id="vpZTop" type="button" title="Bring to front (Ctrl+Shift+])">⤒</button>
+          <button class="z-btn" id="vpZUp" type="button" title="Bring forward (Ctrl+])">↑</button>
+          <button class="z-btn" id="vpZDown" type="button" title="Send backward (Ctrl+[)">↓</button>
+          <button class="z-btn" id="vpZBottom" type="button" title="Send to back (Ctrl+Shift+[)">⤓</button>
         </div>
         <div class="row">
-          <button class="sheet-action" id="vpExport" type="button">导出 PNG</button>
-          <button class="sheet-action" id="vpCopy" type="button">复制到剪贴板</button>
+          <button class="sheet-action" id="vpExport" type="button">Export PNG</button>
+          <button class="sheet-action" id="vpCopy" type="button">Copy to clipboard</button>
         </div>
         <div class="row">
-          <button class="sheet-action ghost" id="vpDelete" type="button">删除</button>
+          <button class="sheet-action ghost" id="vpDelete" type="button">Delete</button>
         </div>
       </div>
     </div>
 
     <!-- 图片属性浮窗 -->
-    <div id="imagePanel" class="float-panel hidden" role="dialog" aria-label="图片属性">
+    <div id="imagePanel" class="float-panel hidden" role="dialog" aria-label="Image properties">
       <div class="float-panel-head">
-        <span class="float-panel-title">图片</span>
-        <button id="imagePanelClose" class="close-x" type="button" aria-label="关闭">×</button>
+        <span class="float-panel-title">Image</span>
+        <button id="imagePanelClose" class="close-x" type="button" aria-label="Close">×</button>
       </div>
       <div class="float-panel-body">
         <div class="row">
-          <span class="row-label">原图</span>
+          <span class="row-label">Source</span>
           <span id="imgNaturalLabel" class="row-value">—</span>
         </div>
         <div class="row">
-          <span class="row-label">锁定</span>
-          <button id="imgLock" class="lock-btn" type="button" aria-pressed="false" title="锁定图片：禁止拖 / 转 / 缩">🔓</button>
+          <span class="row-label">Lock</span>
+          <button id="imgLock" class="lock-btn" type="button" aria-pressed="false" title="Lock image: prevent move / rotate / resize">🔓</button>
         </div>
-        <label class="row"><span class="row-label">插值</span>
+        <label class="row"><span class="row-label">Interp</span>
           <select id="imgInterp">
-            <option value="linear">线性（默认）</option>
-            <option value="nearest">最近（像素画）</option>
+            <option value="linear">Linear (default)</option>
+            <option value="nearest">Nearest (pixel art)</option>
           </select>
         </label>
         <div class="row z-row">
-          <button class="z-btn" id="imgZTop" type="button" title="顶层 (Ctrl+Shift+])">⤒</button>
-          <button class="z-btn" id="imgZUp" type="button" title="上移 (Ctrl+])">↑</button>
-          <button class="z-btn" id="imgZDown" type="button" title="下移 (Ctrl+[)">↓</button>
-          <button class="z-btn" id="imgZBottom" type="button" title="底层 (Ctrl+Shift+[)">⤓</button>
+          <button class="z-btn" id="imgZTop" type="button" title="Bring to front (Ctrl+Shift+])">⤒</button>
+          <button class="z-btn" id="imgZUp" type="button" title="Bring forward (Ctrl+])">↑</button>
+          <button class="z-btn" id="imgZDown" type="button" title="Send backward (Ctrl+[)">↓</button>
+          <button class="z-btn" id="imgZBottom" type="button" title="Send to back (Ctrl+Shift+[)">⤓</button>
         </div>
         <div class="row">
-          <button class="sheet-action ghost" id="imgDelete" type="button">删除</button>
+          <button class="sheet-action" id="imgCrop" type="button" title="Enter crop mode (drag handles inward, Enter to apply, Esc to cancel)">Crop…</button>
+          <button class="sheet-action ghost" id="imgResetCrop" type="button" title="Remove crop (restore full image)">Reset crop</button>
         </div>
+        <div class="row">
+          <button class="sheet-action" id="imgRasterize" type="button" title="Bake current view (crop + resample) into a new image at a chosen resolution">Rasterize…</button>
+        </div>
+        <div class="row">
+          <button class="sheet-action ghost" id="imgDelete" type="button">Delete</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Crop 模式底部 toolbar -->
+    <div id="cropToolbar" class="crop-toolbar hidden" role="toolbar" aria-label="Crop">
+      <span class="crop-hint">Drag handles inward · Enter = apply · Esc = cancel</span>
+      <button id="cropCancel" type="button" class="ghost">Cancel</button>
+      <button id="cropApply" type="button" class="primary">Apply</button>
+    </div>
+
+    <!-- Rasterize 对话框 -->
+    <div id="rasterBackdrop" class="backdrop hidden" aria-hidden="true"></div>
+    <div id="rasterDialog" class="form-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="rasterTitle">
+      <div class="form-head"><span id="rasterTitle">Rasterize image</span></div>
+      <div class="form-body">
+        <div id="rasterSource" class="form-note">Source: —</div>
+        <div class="form-row">
+          <label for="rasterW">Width</label>
+          <input id="rasterW" type="number" min="1" max="16384" step="1" inputmode="numeric">
+        </div>
+        <div class="form-row">
+          <label for="rasterH">Height</label>
+          <input id="rasterH" type="number" min="1" max="16384" step="1" inputmode="numeric">
+        </div>
+        <label class="form-checkbox">
+          <input id="rasterLockAspect" type="checkbox" checked>
+          <span>Lock aspect ratio</span>
+        </label>
+        <div class="form-row">
+          <label for="rasterMode">Resample</label>
+          <select id="rasterMode">
+            <option value="adaptive">Adaptive (photos / smooth)</option>
+            <option value="nearest">Nearest (pixel art / no blur)</option>
+          </select>
+        </div>
+        <div id="rasterEstimate" class="form-note">—</div>
+      </div>
+      <div class="form-actions">
+        <button id="rasterCancel" type="button" class="ghost">Cancel</button>
+        <button id="rasterApply" type="button" class="primary">Apply</button>
       </div>
     </div>
 
@@ -256,25 +325,63 @@
       <span id="actionToastText"></span>
     </div>
 
-    <!-- 会话浏览模态 -->
-    <div id="sessionsBackdrop" class="backdrop hidden" aria-hidden="true"></div>
-    <div id="sessionsModal" class="sessions-modal hidden" role="dialog" aria-label="会话列表">
-      <div class="sessions-head">
-        <span class="sessions-title">会话</span>
-        <button id="sessionsNewBtn" class="sheet-action" type="button">新建</button>
-        <button id="sessionsRefreshBtn" class="sheet-action ghost" type="button" title="重新加载列表（含云端）">↻</button>
+    <!-- Sessions 图库（全屏 overlay；从汉堡菜单进） -->
+    <div id="sessionsGallery" class="sessions-gallery hidden" role="dialog" aria-label="Boards" aria-modal="true">
+      <div class="gallery-head">
+        <button id="sessionsCloseBtn" class="gallery-back" type="button" aria-label="Back">←</button>
+        <span class="gallery-title">Boards</span>
+        <span class="gallery-current">
+          <span class="gallery-current-label">Editing:</span>
+          <input id="galleryCurrentName" type="text" placeholder="Untitled" autocomplete="off" spellcheck="false">
+        </span>
         <div class="spacer"></div>
-        <button id="sessionsCloseBtn" class="close-x" type="button" aria-label="关闭">×</button>
+        <button id="sessionsNewBtn" class="gallery-action" type="button">+ New</button>
+        <button id="sessionsRefreshBtn" class="gallery-action ghost" type="button" title="Refresh (incl. cloud)">↻</button>
       </div>
       <div id="sessionsBreadcrumb" class="sessions-breadcrumb"></div>
-      <div id="sessionsList" class="sessions-list"></div>
+      <div id="sessionsList" class="sessions-grid"></div>
+    </div>
+
+    <!-- 密码 / phrase 确认对话框（替代 window.prompt） -->
+    <div id="pwBackdrop" class="backdrop hidden" aria-hidden="true"></div>
+    <div id="pwDialog" class="pw-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="pwTitle">
+      <div class="pw-head"><span id="pwTitle">Password</span></div>
+      <div class="pw-body">
+        <div id="pwMessage" class="pw-message"></div>
+        <label class="pw-field">
+          <input id="pwInput1" type="password"
+                 name="atlasmaker-vault-key-1" autocomplete="new-password"
+                 autocapitalize="off" autocorrect="off" spellcheck="false"
+                 data-1p-ignore="true" data-lpignore="true" data-bwignore="true" data-form-type="other">
+          <button id="pwShow1" type="button" class="pw-show" tabindex="-1" title="Show/hide">👁</button>
+        </label>
+        <label class="pw-field" id="pwField2">
+          <input id="pwInput2" type="password" placeholder="Confirm"
+                 name="atlasmaker-vault-key-2" autocomplete="new-password"
+                 autocapitalize="off" autocorrect="off" spellcheck="false"
+                 data-1p-ignore="true" data-lpignore="true" data-bwignore="true" data-form-type="other">
+        </label>
+        <div id="pwError" class="pw-error"></div>
+      </div>
+      <div class="pw-actions">
+        <button id="pwCancel" type="button" class="ghost">Cancel</button>
+        <button id="pwOk" type="button" class="primary">OK</button>
+      </div>
+    </div>
+
+    <!-- Busy overlay：锁 UI 防止误触（加密 / 解密 / 加载等长操作） -->
+    <div id="busyOverlay" class="busy-overlay hidden" role="alert" aria-live="assertive">
+      <div class="busy-card">
+        <div class="busy-spinner" aria-hidden="true"></div>
+        <div id="busyLabel" class="busy-label">Working…</div>
+      </div>
     </div>
 
     <!-- 更新 toast -->
     <div id="updateToast" class="toast hidden" role="status" aria-live="polite">
-      <span>有新版本</span>
-      <button id="updateReloadButton" type="button">刷新</button>
-      <button id="updateDismissButton" type="button" class="dismiss" aria-label="忽略">×</button>
+      <span>New version available</span>
+      <button id="updateReloadButton" type="button">Reload</button>
+      <button id="updateDismissButton" type="button" class="dismiss" aria-label="Dismiss">×</button>
     </div>
 
     <script type="module" src="./src/app.js"></script>

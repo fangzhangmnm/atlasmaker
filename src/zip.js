@@ -19,7 +19,7 @@
 
 function Z() {
   if (typeof window === "undefined" || !window.zip) {
-    throw new Error("zip.js 未加载（应在 app.js 之前以 classic <script> 引入 vendor/zip-js/zip-full.min.js）");
+    throw new Error("zip.js not loaded (load vendor/zip-js/zip-full.min.js as a classic <script> before app.js)");
   }
   return window.zip;
 }
@@ -38,7 +38,7 @@ function toZipReader(data) {
   if (data instanceof Uint8Array) return new z.Uint8ArrayReader(data);
   if (data instanceof ArrayBuffer) return new z.Uint8ArrayReader(new Uint8Array(data));
   if (typeof data === "string") return new z.TextReader(data);
-  throw new TypeError("zip: 不支持的数据类型");
+  throw new TypeError("zip: unsupported data type");
 }
 
 // ----- 不加密 -----
@@ -78,7 +78,7 @@ export async function zipUnpack(blob) {
  */
 export async function zipPackEncrypted(entries, password) {
   ensureConfigured();
-  if (!password) throw new Error("加密 zip 需要密码");
+  if (!password) throw new Error("Password required to encrypt zip");
   const z = Z();
   // 1) 内层加密 zip
   const innerWriter = new z.ZipWriter(new z.BlobWriter("application/zip"), {
@@ -98,7 +98,7 @@ export async function zipPackEncrypted(entries, password) {
 /** 解密：peek 外层 → 取 data.atlas.zip → 用 password 解内层 → 返回 { path: Uint8Array } */
 export async function zipUnpackEncrypted(wrapperBlob, password) {
   ensureConfigured();
-  if (!password) throw new Error("解密 zip 需要密码");
+  if (!password) throw new Error("Password required to decrypt zip");
   const z = Z();
   // 1) 外层 (明文)
   const outerReader = new z.ZipReader(new z.BlobReader(wrapperBlob));
@@ -106,7 +106,7 @@ export async function zipUnpackEncrypted(wrapperBlob, password) {
   try {
     const outerEntries = await outerReader.getEntries();
     const dataEntry = outerEntries.find((e) => !e.directory && e.filename === "data.atlas.zip");
-    if (!dataEntry) throw new Error("加密包结构异常：找不到 data.atlas.zip");
+    if (!dataEntry) throw new Error("Malformed encrypted package: data.atlas.zip missing");
     innerBlob = await dataEntry.getData(new z.BlobWriter("application/zip"));
   } finally { await outerReader.close(); }
   // 2) 内层 (加密)
@@ -114,14 +114,14 @@ export async function zipUnpackEncrypted(wrapperBlob, password) {
   try {
     let entries;
     try { entries = await innerReader.getEntries(); }
-    catch (e) { throw new Error("密码错或文件损坏（read entries）"); }
+    catch (e) { throw new Error("Wrong password or corrupted file (read entries)"); }
     const out = {};
     for (const e of entries) {
       if (e.directory) continue;
       try {
         out[e.filename] = await e.getData(new z.Uint8ArrayWriter(), { password });
       } catch (err) {
-        throw new Error("密码错或文件损坏（解密 " + e.filename + "）");
+        throw new Error("Wrong password or corrupted file (decrypt " + e.filename + ")");
       }
     }
     return out;
