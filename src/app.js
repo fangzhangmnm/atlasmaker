@@ -22,6 +22,7 @@ import { sessionFileName } from "./config.js";
 import { rasterizeImage } from "./raster.js";
 import * as crop from "./crop.js";
 import { filtersToCssString } from "./filters.js";
+import { applyChromaKey, applyChromaToImageData, sampleTopLeftPixel } from "./chromakey.js";
 import { makeSwatchBlob, samplePixel, worldToNaturalPx, colorToHex, hexToColor } from "./swatch.js";
 
 const SCENE_FORMAT_VERSION = 1;
@@ -1427,6 +1428,115 @@ adjustResetBtn.addEventListener("click", () => {
   _syncAdjustPanelToObj(obj);
 });
 
+// ----- Chroma key（去背景色）对话框 -----
+// 一次性 bake：原图 → 抠掉「关键色 ± 容差」的像素 → 新 PNG with alpha 替换 obj.blob。
+// undo 走 scene.act → snapshot 保住旧 blob 引用，Ctrl+Z 回去。
+// MVP：native color picker（去 emoji 化）+ tolerance + soft edge + 实时缩略预览（240px max）。
+const chromaBackdrop = document.getElementById("chromaBackdrop");
+const chromaDialog = document.getElementById("chromaDialog");
+const chromaColorInput = document.getElementById("chromaColor");
+const chromaToleranceInput = document.getElementById("chromaTolerance");
+const chromaSoftInput = document.getElementById("chromaSoft");
+const chromaPreviewEl = document.getElementById("chromaPreview");
+const chromaApplyBtn = document.getElementById("chromaApply");
+const chromaCancelBtn = document.getElementById("chromaCancel");
+
+let _chromaState = null; // { objId, sourceImageData, ctx }
+
+async function openChromaDialog() {
+  const sel = scene.firstSelected();
+  if (!sel || sel.type !== "image" || !sel.blob) {
+    showActionToast("Select an image first", 2500);
+    return;
+  }
+  // 预览：缩到 ≤ 240px 边
+  const bitmap = await createImageBitmap(sel.blob);
+  const MAX = 240;
+  const ratio = Math.min(MAX / bitmap.width, MAX / bitmap.height, 1);
+  const pw = Math.max(1, Math.round(bitmap.width * ratio));
+  const ph = Math.max(1, Math.round(bitmap.height * ratio));
+  chromaPreviewEl.width = pw;
+  chromaPreviewEl.height = ph;
+  const ctx = chromaPreviewEl.getContext("2d");
+  ctx.drawImage(bitmap, 0, 0, pw, ph);
+  const sourceImageData = ctx.getImageData(0, 0, pw, ph);
+  bitmap.close();
+  // 默认 key color = 左上角像素（最常见 background 位置）
+  const tl = await sampleTopLeftPixel(sel.blob);
+  chromaColorInput.value = `#${[tl.r, tl.g, tl.b].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+  chromaToleranceInput.value = 10;
+  chromaSoftInput.value = 0;
+  document.getElementById("chromaToleranceVal").textContent = "10";
+  document.getElementById("chromaSoftVal").textContent = "0";
+  _chromaState = { objId: sel.id, sourceImageData, ctx };
+  _updateChromaPreview();
+  chromaBackdrop.classList.remove("hidden");
+  chromaDialog.classList.remove("hidden");
+}
+
+function _updateChromaPreview() {
+  if (!_chromaState) return;
+  const { sourceImageData, ctx } = _chromaState;
+  // Clone source（applyChromaToImageData 原地改）
+  const fresh = new ImageData(
+    new Uint8ClampedArray(sourceImageData.data),
+    sourceImageData.width,
+    sourceImageData.height,
+  );
+  const keyColor = hexToColor(chromaColorInput.value);
+  const tol = parseInt(chromaToleranceInput.value, 10) || 0;
+  const soft = parseInt(chromaSoftInput.value, 10) || 0;
+  applyChromaToImageData(fresh, keyColor, tol, soft);
+  ctx.clearRect(0, 0, fresh.width, fresh.height);
+  ctx.putImageData(fresh, 0, 0);
+}
+
+function closeChromaDialog() {
+  chromaBackdrop.classList.add("hidden");
+  chromaDialog.classList.add("hidden");
+  _chromaState = null;
+}
+
+chromaColorInput.addEventListener("input", _updateChromaPreview);
+chromaToleranceInput.addEventListener("input", () => {
+  document.getElementById("chromaToleranceVal").textContent = chromaToleranceInput.value;
+  _updateChromaPreview();
+});
+chromaSoftInput.addEventListener("input", () => {
+  document.getElementById("chromaSoftVal").textContent = chromaSoftInput.value;
+  _updateChromaPreview();
+});
+chromaCancelBtn.addEventListener("click", closeChromaDialog);
+chromaBackdrop.addEventListener("click", closeChromaDialog);
+chromaDialog.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); chromaApplyBtn.click(); }
+  else if (e.key === "Escape") { e.preventDefault(); closeChromaDialog(); }
+});
+
+chromaApplyBtn.addEventListener("click", async () => {
+  if (!_chromaState) return;
+  const { objId } = _chromaState;
+  const obj = scene.get(objId);
+  if (!obj || !obj.blob) { closeChromaDialog(); return; }
+  const keyColor = hexToColor(chromaColorInput.value);
+  const tol = parseInt(chromaToleranceInput.value, 10) || 0;
+  const soft = parseInt(chromaSoftInput.value, 10) || 0;
+  closeChromaDialog();
+  try {
+    const newBlob = await withBusy("Removing background…", () =>
+      applyChromaKey(obj.blob, keyColor, tol, soft)
+    );
+    const newSrc = _newImageSrc(newBlob);
+    scene.act(() => scene.replaceImageBlob(objId, newBlob, newSrc));
+    showActionToast(`Background removed (${formatBytes(newBlob.size)})`);
+  } catch (e) {
+    console.warn("chroma key failed", e);
+    showActionToast(`Failed: ${e.message || e}`, 4000);
+  }
+});
+
+document.getElementById("imgChroma").addEventListener("click", () => openChromaDialog());
+
 // ----- z-order 按钮（两个 panel 共用一套 handler） -----
 function wireZBtn(btnId, fn) {
   const btn = document.getElementById(btnId);
@@ -1790,16 +1900,54 @@ function _buildCropDom() {
   return { dimT, dimR, dimB, dimL, rectEl, handles };
 }
 
+// Crop 模式期间「往回拉」支持：
+//   如果 obj 已有 crop → temp-expand obj 到 full natural（直接 mutate，不走 scene.act 不 dirty），
+//   bounds 设为 expanded full、initialRect 设为 orig 可见区域。用户可拖 handle 向外，到极限就是 uncrop。
+//   Apply / Cancel 时把 obj 状态恢复 / 替换，scene.act 在「恢复后」take snapshot → undo 回正确旧态。
+let _cropOrig = null;
+
+function _silentMutateObj(obj, patch) {
+  Object.assign(obj, patch);
+  scene._applyTransform(obj);
+}
+function _restoreCropOrig(obj) {
+  if (!_cropOrig) return;
+  _silentMutateObj(obj, {
+    x: _cropOrig.x, y: _cropOrig.y, w: _cropOrig.w, h: _cropOrig.h,
+    crop: _cropOrig.crop,
+  });
+}
+
 function enterCropMode(obj) {
   if (obj.rotation && Math.abs(obj.rotation) > 0.01) {
     showActionToast("Crop doesn't support rotated images yet — reset rotation first.", 4500);
     return;
   }
+  _cropOrig = {
+    crop: obj.crop ? { ...obj.crop } : undefined,
+    x: obj.x, y: obj.y, w: obj.w, h: obj.h,
+  };
+  let bounds, initialRect;
+  if (obj.crop) {
+    // Temp uncrop：展开到 full natural，旧 visible 区域留在原 world 位置（让 initialRect 默认就是原可见）
+    const oldCrop = obj.crop;
+    const wpnX = obj.w / oldCrop.w;
+    const wpnY = obj.h / oldCrop.h;
+    const fullW = obj.naturalW * wpnX;
+    const fullH = obj.naturalH * wpnY;
+    const fullX = obj.x - oldCrop.x * wpnX;
+    const fullY = obj.y - oldCrop.y * wpnY;
+    _silentMutateObj(obj, { x: fullX, y: fullY, w: fullW, h: fullH, crop: undefined });
+    bounds = { x: fullX, y: fullY, w: fullW, h: fullH };
+    initialRect = { x: _cropOrig.x, y: _cropOrig.y, w: _cropOrig.w, h: _cropOrig.h };
+  }
   crop.start({
     obj,
+    bounds,
+    initialRect,
     onChange: () => renderOverlay(),
     onApply: ({ rect }) => doApplyCrop(obj.id, rect),
-    onCancel: () => exitCropMode(),
+    onCancel: () => exitCropMode({ restoreOrig: true }),
   });
   overlayEl.innerHTML = "";
   _cropDom = _buildCropDom();
@@ -1808,7 +1956,12 @@ function enterCropMode(obj) {
   renderOverlay();
 }
 
-function exitCropMode() {
+function exitCropMode({ restoreOrig = false } = {}) {
+  if (restoreOrig && _cropOrig) {
+    const obj = scene.get(crop.activeObjId());
+    if (obj) _restoreCropOrig(obj);
+  }
+  _cropOrig = null;
   if (_cropDom) overlayEl.innerHTML = "";
   _cropDom = null;
   cropToolbar.classList.add("hidden");
@@ -1819,9 +1972,21 @@ function exitCropMode() {
 function doApplyCrop(objId, rect) {
   const obj = scene.get(objId);
   if (!obj) { exitCropMode(); return; }
+  // 1) 在当前（可能 temp-expand 过的）坐标系下算 newState
   const out = crop.applyCropMath(obj, rect);
+  // 用户拖回全图 → crop 完全 = natural 全图 → 标准化为 undefined（数据更干净）
+  const isFullCrop = (
+    Math.abs(out.crop.x) < 0.5 &&
+    Math.abs(out.crop.y) < 0.5 &&
+    Math.abs(out.crop.w - obj.naturalW) < 1 &&
+    Math.abs(out.crop.h - obj.naturalH) < 1
+  );
+  const finalCrop = isFullCrop ? undefined : out.crop;
+  // 2) 静默恢复 orig → scene.act 的 snapshot 抓到 orig
+  if (_cropOrig) _restoreCropOrig(obj);
+  // 3) 把 new state 通过 act 应用 → undo 回 orig
   scene.act(() => {
-    scene.update(objId, { x: out.x, y: out.y, w: out.w, h: out.h, crop: out.crop });
+    scene.update(objId, { x: out.x, y: out.y, w: out.w, h: out.h, crop: finalCrop });
   });
   exitCropMode();
 }

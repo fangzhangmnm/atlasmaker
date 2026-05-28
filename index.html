@@ -276,6 +276,7 @@
         </div>
         <div class="row">
           <button class="sheet-action" id="imgAdjust" type="button" title="Color adjust (brightness / contrast / saturation / hue) — non-destructive, bake via Rasterize">Adjust…</button>
+          <button class="sheet-action" id="imgChroma" type="button" title="Remove background by color (chroma key) — destructive, undo-able">Remove BG…</button>
         </div>
         <div class="row">
           <button class="sheet-action" id="imgRasterize" type="button" title="Bake current view (crop + resample) into a new image at a chosen resolution">Rasterize…</button>
@@ -300,6 +301,36 @@
       <div class="form-actions">
         <button id="inputCancel" type="button" class="ghost">Cancel</button>
         <button id="inputOk" type="button" class="primary">OK</button>
+      </div>
+    </div>
+
+    <!-- Chroma key（去背景色）对话框 -->
+    <div id="chromaBackdrop" class="backdrop hidden" aria-hidden="true"></div>
+    <div id="chromaDialog" class="form-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="chromaTitle">
+      <div class="form-head"><span id="chromaTitle">Remove background</span></div>
+      <div class="form-body">
+        <div class="form-row">
+          <label for="chromaColor">Key color</label>
+          <input id="chromaColor" type="color" value="#ffffff">
+        </div>
+        <div class="form-row">
+          <label for="chromaTolerance">Tolerance</label>
+          <input id="chromaTolerance" type="range" min="0" max="100" step="1" value="10">
+          <span id="chromaToleranceVal" class="adjust-value">10</span>
+        </div>
+        <div class="form-row">
+          <label for="chromaSoft">Soft edge</label>
+          <input id="chromaSoft" type="range" min="0" max="50" step="1" value="0">
+          <span id="chromaSoftVal" class="adjust-value">0</span>
+        </div>
+        <div class="chroma-preview-wrap">
+          <canvas id="chromaPreview" class="chroma-preview"></canvas>
+        </div>
+        <div class="form-note">Bakes alpha into a new PNG (Ctrl+Z to revert).</div>
+      </div>
+      <div class="form-actions">
+        <button id="chromaCancel" type="button" class="ghost">Cancel</button>
+        <button id="chromaApply" type="button" class="primary">Apply</button>
       </div>
     </div>
 

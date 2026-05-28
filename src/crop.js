@@ -28,14 +28,16 @@ export function activeObjId() { return _state?.objId; }
 
 /**
  * 进入裁切模式。回调用于 app 通知重渲染 / 应用 / 取消时回 hook。
+ * bounds / initialRect 可选 —— 默认都是 obj bbox（只能向内裁）。
+ * 想支持「向外拉回」时，app 层先 temp-expand obj 到 full natural，bounds = expanded bbox，
+ * initialRect = 原可见区域 → 用户拖出去就是 uncrop。
  */
-export function start({ obj, onApply, onCancel, onChange }) {
+export function start({ obj, onApply, onCancel, onChange, bounds, initialRect }) {
+  const defBox = { x: obj.x, y: obj.y, w: obj.w, h: obj.h };
   _state = {
     objId: obj.id,
-    // crop rect 在世界坐标里（image-local 偏移：相对 obj 的 x,y）。
-    // 初始 = 整个 obj bbox（用户可拖窄）。
-    rect: { x: obj.x, y: obj.y, w: obj.w, h: obj.h },
-    bounds: { x: obj.x, y: obj.y, w: obj.w, h: obj.h }, // 不可拖出
+    rect: initialRect ? { ...initialRect } : { ...defBox },
+    bounds: bounds ? { ...bounds } : { ...defBox },
     onApply, onCancel,
   };
   _onChange = onChange || null;
