@@ -124,8 +124,14 @@
       <button class="tool" id="cloudPushBtn" type="button" title="Push to OneDrive (overwrite cloud)" disabled>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M18 10h-1.3A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path>
-          <polyline points="8 13 12 9 16 13"></polyline>
-          <line x1="12" y1="9" x2="12" y2="17"></line>
+          <g class="cloud-arrow">
+            <polyline points="8 13 12 9 16 13"></polyline>
+            <line x1="12" y1="9" x2="12" y2="17"></line>
+          </g>
+          <g class="spin-arc" style="transform-origin: 12px 14px">
+            <path d="M9 14a3 3 0 0 1 5.5-1.6"></path>
+            <polyline points="14.5 11.4 14.5 13.4 12.6 13.4"></polyline>
+          </g>
         </svg>
       </button>
       <input id="importFile" type="file" accept=".zip,application/zip" hidden />

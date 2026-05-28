@@ -294,6 +294,16 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
   0%, 100% { opacity: 1; }
   50%      { opacity: 0.45; }
 }
+/* cloud-busy 状态：把 cloud + up-arrow 换成 cloud + 旋转弧。
+   .cloud-arrow / .spin-arc 都在按钮 SVG 里写死，CSS 切换显示 + 转 */
+#cloudPushBtn .spin-arc { display: none; }
+#cloudPushBtn[data-state="cloud-busy"] .cloud-arrow { display: none; }
+#cloudPushBtn[data-state="cloud-busy"] .spin-arc {
+  display: inline;
+  animation: am-cloud-spin 1s linear infinite;
+  color: var(--accent);
+}
+@keyframes am-cloud-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 .tool[aria-pressed="true"] {
   background: var(--accent-soft);
   border-color: var(--accent);

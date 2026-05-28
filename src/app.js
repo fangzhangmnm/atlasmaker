@@ -426,17 +426,26 @@ async function confirmTypePhrase(phrase, message) {
 // 保存 = 本地 IDB（atomic）；explicit=true 时**额外**触发云推（用户在场 = 能看见 toast 和 412 提示）。
 // autosave / 3-min / visibility 仍走 explicit=false → 绝不触云（用户没在场，412 sibling 会失踪）。
 // Ctrl+Shift+S 走 explicit=true + skipCloud=true：用户明确「只存本地」，跳过云、但给个 toast 确认。
-// Coalesced save 模式：
+// Coalesced save 模式（0.9.12 升级）：
 //   - `_saving` 覆盖**整段** local + cloud + toast，期间任何 saveCurrentSession 调用都立刻 return
-//   - drain 条件 = **整轮保存期间 scene 是否被改过**（`_dirty` 在保存中复活 = 有真改动）。
-//     没改 = 当前保存已经覆盖了全部状态，drain 是 no-op，跳过；改了 = 当前保存只覆盖到改之前，
-//     得再跑一次把改动也保存。
-//   - `_pendingSaveOpts` 只是「**如果**要 drain，用谁的意图」：保存期间最近一次显式按键（Ctrl+S
-//     vs Ctrl+Shift+S）的 opts。没人按 = drain 用 autosave 默认（local only, 静默）。
-//   - 用户狂按 Ctrl+S 但没改东西 → 一次保存就够，后续按键无 op。
-//   - 用户按 Ctrl+S 后又改了几笔 → 第一轮存当时状态，第二轮 drain 把改动也存。
-//   - 这避免了 0.9.8 之前的隐患：`_saving = false` 在本地保存完就放了，云推阶段还能并发 → 平行上传。
+//   - drain 条件 = `_dirty`（改了内容）**或** `pending.explicit && !inFlight.explicit`
+//     （用户在 autosave 跑期间按了 Ctrl+S，意图升级了）。后者对齐 WebPaint v52
+//     的「in-flight local + user 按 push → 必 queue push」规则。
+//   - `_pendingSaveOpts` 是「**如果**要 drain，用谁的意图」：保存期间最近一次按键的 opts
+//     （或 autosave 默认）。
+//
+//   矩阵：
+//   | 在跑 explicit | 中间 markDirty | 中间按 Ctrl+S (explicit) | drain? | drain 用谁 |
+//   |---|---|---|---|---|
+//   | * | no   | no  | no       | — |
+//   | * | yes  | no  | yes      | pending（或 autosave 默认） |
+//   | * | yes  | yes | yes      | pending |
+//   | false | no | yes  | **yes** | pending（用户意图升级到云推） |
+//   | true  | no | yes  | no | — （云已经在推了） |
+//
+//   `queueMicrotask` drain 避免同步递归 stack。
 let _pendingSaveOpts = null;
+let _inFlightExplicit = false;
 
 async function saveCurrentSession({ explicit = false, skipCloud = false } = {}) {
   if (_saving) {
@@ -451,6 +460,7 @@ async function saveCurrentSession({ explicit = false, skipCloud = false } = {}) 
     return;
   }
   _saving = true;
+  _inFlightExplicit = explicit;
   setSaveStatus("saving");
   if (explicit && cloud.isAuthConfigured() && cloud.isSignedIn()) {
     cloudPushBtn.disabled = true;
@@ -505,6 +515,7 @@ async function saveCurrentSession({ explicit = false, skipCloud = false } = {}) 
 
     // === 云推 ===
     let pushOutcome = null;
+    cloudPushBtn.dataset.state = "cloud-busy"; // 旋转弧动画（CSS）
     try {
       const name = savedDoc.name;
       const newCloudPath = pathFromInput();
@@ -526,6 +537,8 @@ async function saveCurrentSession({ explicit = false, skipCloud = false } = {}) 
       } else {
         pushOutcome = { error: e.message || String(e) };
       }
+    } finally {
+      delete cloudPushBtn.dataset.state;
     }
 
     if (pushOutcome?.error) {
@@ -539,12 +552,17 @@ async function saveCurrentSession({ explicit = false, skipCloud = false } = {}) 
     }
   } finally {
     _saving = false;
+    const wasExplicit = _inFlightExplicit;
+    _inFlightExplicit = false;
     cloudPushBtn.disabled = !cloud.isSignedIn();
-    // Drain：scene 在保存期间被改过（_dirty 又变 true）→ 再保存一次；否则 no-op 丢弃 pending。
-    // queueMicrotask 避开自递归 stack。
-    const wantDrain = _dirty;
+    // Drain 条件：
+    //   (a) 保存期间真改了 (_dirty 复活)
+    //   (b) 或：in-flight 非 explicit，但 pending 是 explicit
+    //       → 用户的意图升级了（autosave 在跑时按了 Ctrl+S），云推没跑过，必须 drain
     const opts = _pendingSaveOpts;
     _pendingSaveOpts = null;
+    const explicitUpgrade = !wasExplicit && opts?.explicit;
+    const wantDrain = _dirty || explicitUpgrade;
     if (wantDrain) {
       queueMicrotask(() => saveCurrentSession(opts || { explicit: false, skipCloud: false }));
     }
