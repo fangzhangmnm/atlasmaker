@@ -1944,6 +1944,9 @@ function _restoreCropOrig(obj) {
 }
 
 function enterCropMode(obj) {
+  // 已在 crop mode 时再点 Crop = no-op，否则 _cropOrig 会被「已 expanded 的状态」覆盖
+  // → cancel 时恢复成 expanded 状态 → 用户感觉「双击 Crop 把 crop reset 了」。
+  if (crop.isActive()) return;
   if ((obj.rotation && Math.abs(obj.rotation) > 0.01) || obj.flipH || obj.flipV) {
     showActionToast("Crop doesn't support rotated / flipped images yet — reset rotation / flip first.", 4500);
     return;
@@ -2196,10 +2199,16 @@ async function rasterizeViewport(vp) {
     const relRotRad = ((obj.rotation || 0) - (vp.rotation || 0)) * Math.PI / 180;
     const dw = obj.w * sx;
     const dh = obj.h * sy;
+    // 烤进所有非破坏视觉效果：filter / flip / crop（不烤 = 输出和屏幕看到的不一致 = bug）
+    const fs = obj.filters ? filtersToCssString(obj.filters) : "";
     ctx.save();
+    if (fs) ctx.filter = fs;
     ctx.translate(dxCenter, dyCenter);
     if (relRotRad) ctx.rotate(relRotRad);
-    try { ctx.drawImage(bitmap, -dw / 2, -dh / 2, dw, dh); } catch (_) {}
+    if (obj.flipH || obj.flipV) ctx.scale(obj.flipH ? -1 : 1, obj.flipV ? -1 : 1);
+    // crop = drawImage 的 source rect（natural px）；没 crop = 整张
+    const c = obj.crop || { x: 0, y: 0, w: obj.naturalW || bitmap.width, h: obj.naturalH || bitmap.height };
+    try { ctx.drawImage(bitmap, c.x, c.y, c.w, c.h, -dw / 2, -dh / 2, dw, dh); } catch (_) {}
     ctx.restore();
     bitmap.close();
   }
