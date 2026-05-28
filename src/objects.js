@@ -358,7 +358,14 @@ export class Scene {
     el.style.width = `${obj.w}px`;
     el.style.height = `${obj.h}px`;
     el.style.transformOrigin = "50% 50%";
-    el.style.transform = obj.rotation ? `rotate(${obj.rotation}deg)` : "";
+    // 旋转 + 翻转：CSS transform 是 right-to-left 应用，所以 rotate 在外 / scale 在内
+    // → 等价数学：先 mirror（image-local 镜像），再 rotate。视觉上 flip 后再 rotate，符合直觉。
+    const parts = [];
+    if (obj.rotation) parts.push(`rotate(${obj.rotation}deg)`);
+    if (obj.flipH || obj.flipV) {
+      parts.push(`scale(${obj.flipH ? -1 : 1}, ${obj.flipV ? -1 : 1})`);
+    }
+    el.style.transform = parts.join(" ");
     if (obj.type === "viewport") {
       const label = el.querySelector(".vp-label");
       if (label) label.textContent = obj.binding || "";

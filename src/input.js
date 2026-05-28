@@ -294,7 +294,14 @@ export class Input {
 
   _onKeyDown = (ev) => {
     const tgt = ev.target;
-    const inInput = tgt && (tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA" || tgt.isContentEditable);
+    // 只对**文本编辑**类元素 swallow scene 快捷键（避免误删 obj 等 0.9.x 报告过的「输 Backspace 删图」类 bug）。
+    // range / checkbox / color / file 等 input 没有文本编辑历史概念 —— Ctrl+Z 应该穿透给 scene undo。
+    const inputType = (tgt && tgt.tagName === "INPUT") ? (tgt.type || "text").toLowerCase() : "";
+    const inTextInput = tgt && (
+      (tgt.tagName === "INPUT" && /^(text|password|email|search|tel|url|number)$/.test(inputType))
+      || tgt.tagName === "TEXTAREA"
+      || tgt.isContentEditable
+    );
     // Ctrl+S / Ctrl+Shift+S 在 input-focus guard **之前**处理：
     // 永远 preventDefault（避免浏览器弹「保存网页」对话框），永远 call hook —— hook 内部
     // 会判 _loading / _saving 决定要不要真存（密码 dialog / boot apply 期间会 refuse）。
@@ -309,7 +316,7 @@ export class Input {
       }
       return;
     }
-    if (inInput) return;
+    if (inTextInput) return;
     if (ev.key === HAND_KEY && !this._spaceHeld) {
       this._spaceHeld = true;
       document.body.dataset.tool = "hand";

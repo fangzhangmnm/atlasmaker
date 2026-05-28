@@ -278,11 +278,13 @@ async function renderBoardThumb(maxSize = 512) {
       const fs = obj.filters ? filtersToCssString(obj.filters) : "";
       const savedFilter = ctx.filter;
       ctx.filter = fs || "none";
-      if (obj.rotation) {
+      const needTransform = obj.rotation || obj.flipH || obj.flipV;
+      if (needTransform) {
         const cx = (tl.x + br.x) / 2, cy = (tl.y + br.y) / 2;
         ctx.save();
         ctx.translate(cx, cy);
-        ctx.rotate(obj.rotation * Math.PI / 180);
+        if (obj.rotation) ctx.rotate(obj.rotation * Math.PI / 180);
+        if (obj.flipH || obj.flipV) ctx.scale(obj.flipH ? -1 : 1, obj.flipV ? -1 : 1);
         try { ctx.drawImage(imgEl, -w_ / 2, -h_ / 2, w_, h_); } catch (_) {}
         ctx.restore();
       } else {
@@ -1373,6 +1375,29 @@ function closeAdjustPanel() {
 }
 
 document.getElementById("imgAdjust").addEventListener("click", () => openAdjustPanel());
+
+// ----- Flip / Rotate 90° -----
+// 非破坏：obj.flipH / obj.flipV / obj.rotation 通过 CSS transform 渲染（objects.js _applyTransform）。
+// 不烤 blob → undo 零开销、Rasterize 时可一并 bake（未来要做的话改 raster.js）。
+// 旋转把现有 rotation +90 / -90 加上去再 normalize 到 (-180, 180]。
+function _rotateBy(deg) {
+  const sel = scene.firstSelected();
+  if (!sel) return;
+  let r = (sel.rotation || 0) + deg;
+  while (r > 180) r -= 360;
+  while (r <= -180) r += 360;
+  scene.act(() => scene.update(sel.id, { rotation: r }));
+}
+function _toggleFlip(axis) {
+  const sel = scene.firstSelected();
+  if (!sel || sel.type !== "image") return;
+  const key = axis === "h" ? "flipH" : "flipV";
+  scene.act(() => scene.update(sel.id, { [key]: !sel[key] }));
+}
+document.getElementById("imgRotL").addEventListener("click", () => _rotateBy(-90));
+document.getElementById("imgRotR").addEventListener("click", () => _rotateBy(90));
+document.getElementById("imgFlipH").addEventListener("click", () => _toggleFlip("h"));
+document.getElementById("imgFlipV").addEventListener("click", () => _toggleFlip("v"));
 adjustPanelCloseBtn.addEventListener("click", () => closeAdjustPanel());
 
 // 选区变 → 同步 panel 滑块到新 obj.filters（若 panel 还开着）
@@ -1919,8 +1944,8 @@ function _restoreCropOrig(obj) {
 }
 
 function enterCropMode(obj) {
-  if (obj.rotation && Math.abs(obj.rotation) > 0.01) {
-    showActionToast("Crop doesn't support rotated images yet — reset rotation first.", 4500);
+  if ((obj.rotation && Math.abs(obj.rotation) > 0.01) || obj.flipH || obj.flipV) {
+    showActionToast("Crop doesn't support rotated / flipped images yet — reset rotation / flip first.", 4500);
     return;
   }
   _cropOrig = {

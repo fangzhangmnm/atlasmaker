@@ -53,14 +53,14 @@ export async function samplePixel(blob, naturalX, naturalY) {
 
 /**
  * 把世界坐标 (wx, wy) 折算到 image obj 的 natural pixel 坐标。
- * 考虑 obj.rotation + obj.crop。
+ * 考虑 obj.rotation + obj.crop + obj.flipH/V。
  */
 export function worldToNaturalPx(obj, wx, wy) {
   const cx = obj.x + obj.w / 2;
   const cy = obj.y + obj.h / 2;
   let dx = wx - cx;
   let dy = wy - cy;
-  // 反旋转回 image-local
+  // 反旋转回 image-local（CSS transform: rotate(R) scale(s) right-to-left → 先去 rotate）
   if (obj.rotation) {
     const rad = -obj.rotation * Math.PI / 180;
     const cs = Math.cos(rad), sn = Math.sin(rad);
@@ -69,8 +69,11 @@ export function worldToNaturalPx(obj, wx, wy) {
     dx = dxr; dy = dyr;
   }
   // image-local top-left 起点
-  const localX = dx + obj.w / 2;
-  const localY = dy + obj.h / 2;
+  let localX = dx + obj.w / 2;
+  let localY = dy + obj.h / 2;
+  // 反 flip（image-local 镜像 → 抵消）
+  if (obj.flipH) localX = obj.w - localX;
+  if (obj.flipV) localY = obj.h - localY;
   // 当前显示的"可见区域" = obj.crop || 全图
   const crop = obj.crop || { x: 0, y: 0, w: obj.naturalW, h: obj.naturalH };
   const wpnX = obj.w / crop.w; // world per natural
