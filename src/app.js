@@ -284,16 +284,19 @@ async function renderBoardThumb(maxSize = 512) {
       const savedFilter = ctx.filter;
       ctx.filter = fs || "none";
       const needTransform = obj.rotation || obj.flipH || obj.flipV;
+      // 9-arg drawImage 走 source crop：obj.crop 时只画那块；没 crop 时画整图。
+      // bug 修复（0.11.1）：之前用 5-arg 形式 → cropped 图在 thumb 里显示成未裁切的整图。
+      const c = obj.crop || { x: 0, y: 0, w: imgEl.naturalWidth, h: imgEl.naturalHeight };
       if (needTransform) {
         const cx = (tl.x + br.x) / 2, cy = (tl.y + br.y) / 2;
         ctx.save();
         ctx.translate(cx, cy);
         if (obj.rotation) ctx.rotate(obj.rotation * Math.PI / 180);
         if (obj.flipH || obj.flipV) ctx.scale(obj.flipH ? -1 : 1, obj.flipV ? -1 : 1);
-        try { ctx.drawImage(imgEl, -w_ / 2, -h_ / 2, w_, h_); } catch (_) {}
+        try { ctx.drawImage(imgEl, c.x, c.y, c.w, c.h, -w_ / 2, -h_ / 2, w_, h_); } catch (_) {}
         ctx.restore();
       } else {
-        try { ctx.drawImage(imgEl, tl.x, tl.y, w_, h_); } catch (_) {}
+        try { ctx.drawImage(imgEl, c.x, c.y, c.w, c.h, tl.x, tl.y, w_, h_); } catch (_) {}
       }
       ctx.filter = savedFilter;
     }
@@ -1446,20 +1449,21 @@ async function openChromaDialog() {
     showActionToast("Select an image first", 2500);
     return;
   }
-  // 预览：缩到 ≤ 240px 边
+  // 预览：缩到 ≤ 240px 边；有 crop 就只画那块，跟 board 显示一致（0.11.1 bug fix）
   const bitmap = await createImageBitmap(sel.blob);
   const MAX = 240;
-  const ratio = Math.min(MAX / bitmap.width, MAX / bitmap.height, 1);
-  const pw = Math.max(1, Math.round(bitmap.width * ratio));
-  const ph = Math.max(1, Math.round(bitmap.height * ratio));
+  const c = sel.crop || { x: 0, y: 0, w: bitmap.width, h: bitmap.height };
+  const ratio = Math.min(MAX / c.w, MAX / c.h, 1);
+  const pw = Math.max(1, Math.round(c.w * ratio));
+  const ph = Math.max(1, Math.round(c.h * ratio));
   chromaPreviewEl.width = pw;
   chromaPreviewEl.height = ph;
   const ctx = chromaPreviewEl.getContext("2d");
-  ctx.drawImage(bitmap, 0, 0, pw, ph);
+  ctx.drawImage(bitmap, c.x, c.y, c.w, c.h, 0, 0, pw, ph);
   const sourceImageData = ctx.getImageData(0, 0, pw, ph);
   bitmap.close();
-  // 默认 key color = 左上角像素（最常见 background 位置）
-  const tl = await sampleTopLeftPixel(sel.blob);
+  // 默认 key color = 显示区域左上角（cropped 时是 crop 起点，不是原图 0,0）
+  const tl = await sampleTopLeftPixel(sel.blob, sel.crop || null);
   chromaColorInput.value = `#${[tl.r, tl.g, tl.b].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
   chromaToleranceInput.value = 10;
   chromaSoftInput.value = 0;
@@ -1556,7 +1560,7 @@ function _setupPixelFilterDialog({
       showActionToast("Select an image first", 2500);
       return;
     }
-    const { imageData, w, h } = await buildPreviewSource(sel.blob, 240);
+    const { imageData, w, h } = await buildPreviewSource(sel.blob, 240, sel.crop || null);
     preview.width = w;
     preview.height = h;
     state = { objId: sel.id, sourceImageData: imageData, ctx: preview.getContext("2d") };
@@ -1695,7 +1699,7 @@ function _setupTabbedFilterDialog({
     if (!sel || sel.type !== "image" || !sel.blob) {
       showActionToast("Select an image first", 2500); return;
     }
-    const { imageData, w, h } = await buildPreviewSource(sel.blob, 240);
+    const { imageData, w, h } = await buildPreviewSource(sel.blob, 240, sel.crop || null);
     preview.width = w;
     preview.height = h;
     const tabValues = {};

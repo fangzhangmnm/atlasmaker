@@ -65,15 +65,20 @@ export async function applyChromaKey(blob, keyColor, tolerance, soft = 0) {
   }
 }
 
-/** 取 image 第 (0,0) 像素颜色，给 chroma dialog 默认值用（大多背景在左上角） */
-export async function sampleTopLeftPixel(blob) {
+/**
+ * 取 image「显示区左上角」的 1px 颜色，给 chroma dialog 默认 key 用。
+ * crop 时是 (crop.x, crop.y)，没 crop 就是 (0,0)。
+ */
+export async function sampleTopLeftPixel(blob, crop = null) {
   const bitmap = await createImageBitmap(blob);
   try {
+    const sx = crop ? crop.x : 0;
+    const sy = crop ? crop.y : 0;
     const canvas = document.createElement("canvas");
     canvas.width = 1;
     canvas.height = 1;
     const ctx = canvas.getContext("2d");
-    ctx.drawImage(bitmap, 0, 0, 1, 1, 0, 0, 1, 1);
+    ctx.drawImage(bitmap, sx, sy, 1, 1, 0, 0, 1, 1);
     const d = ctx.getImageData(0, 0, 1, 1).data;
     return { r: d[0], g: d[1], b: d[2] };
   } finally {

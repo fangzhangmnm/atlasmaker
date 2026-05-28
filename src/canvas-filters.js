@@ -143,18 +143,26 @@ export async function bakeImageWithCanvasFilter(blob, applyFn) {
   }
 }
 
-/** 解码 + 缩到 preview 尺寸（≤ maxSide），返回 ImageData + ctx ready to draw。 */
-export async function buildPreviewSource(blob, maxSide = 240) {
+/**
+ * 解码 + 缩到 preview 尺寸（≤ maxSide），返回 ImageData。
+ * crop = { x, y, w, h }（natural px）时只取那块；否则整图。
+ * 加 crop 支持是为了让 modal preview 跟 board 上 cropped 显示一致（0.11.1 bug fix）。
+ */
+export async function buildPreviewSource(blob, maxSide = 240, crop = null) {
   const bitmap = await createImageBitmap(blob);
   try {
-    const ratio = Math.min(maxSide / bitmap.width, maxSide / bitmap.height, 1);
-    const pw = Math.max(1, Math.round(bitmap.width * ratio));
-    const ph = Math.max(1, Math.round(bitmap.height * ratio));
+    const cx = crop ? crop.x : 0;
+    const cy = crop ? crop.y : 0;
+    const cw = crop ? crop.w : bitmap.width;
+    const ch = crop ? crop.h : bitmap.height;
+    const ratio = Math.min(maxSide / cw, maxSide / ch, 1);
+    const pw = Math.max(1, Math.round(cw * ratio));
+    const ph = Math.max(1, Math.round(ch * ratio));
     const canvas = document.createElement("canvas");
     canvas.width = pw;
     canvas.height = ph;
     const ctx = canvas.getContext("2d");
-    ctx.drawImage(bitmap, 0, 0, pw, ph);
+    ctx.drawImage(bitmap, cx, cy, cw, ch, 0, 0, pw, ph);
     const imageData = ctx.getImageData(0, 0, pw, ph);
     return { imageData, w: pw, h: ph };
   } finally {
