@@ -31,16 +31,19 @@ export async function makeSwatchBlob(c, size = SWATCH_SIZE) {
 
 /**
  * 从 image blob 在 (naturalX, naturalY) 处采 1 像素颜色。
+ * WYSIWYG：如果传 cssFilter（同 obj.filters 的 CSS 字符串），canvas2d 会原生应用 filter →
+ * 采到的是屏幕上**看到的**颜色，不是原始 blob 像素。crop / flip / rotate 由 worldToNaturalPx
+ * 已经反算到 natural 坐标，所以那些 already accounted for。
  * @returns {Promise<{r:number,g:number,b:number,a:number}>}
  */
-export async function samplePixel(blob, naturalX, naturalY) {
+export async function samplePixel(blob, naturalX, naturalY, cssFilter = "") {
   const bitmap = await createImageBitmap(blob);
   try {
     const canvas = document.createElement("canvas");
     canvas.width = 1;
     canvas.height = 1;
     const ctx = canvas.getContext("2d");
-    // 在 source 上从 (x,y) 取 1×1，画到 (0,0) 1×1
+    if (cssFilter) ctx.filter = cssFilter;
     const sx = Math.max(0, Math.min(bitmap.width - 1, Math.floor(naturalX)));
     const sy = Math.max(0, Math.min(bitmap.height - 1, Math.floor(naturalY)));
     ctx.drawImage(bitmap, sx, sy, 1, 1, 0, 0, 1, 1);

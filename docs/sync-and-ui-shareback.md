@@ -165,11 +165,28 @@ SVG 里：
 参考 WebPaint §7。AtlasMaker 已经做到的：
 - ✅ SVG icon（不用 emoji）
 - ✅ in-app dialog 代替 alert / prompt / confirm（pw-dialog / form-dialog / sheets）
-- ✅ SW registration cached
+- ✅ SW registration **模块顶层**（0.10.4 修，之前用 `window.load` 是 v58 同款坑：dynamic import 异步导致 load 早 fire，listener 永远不触发 → SW 没装 → iPad PWA 离线找不到 server）
+- ✅ 「Check for updates」菜单项（0.10.4 加，复用启动时存的 `_swRegistration`，比 `getRegistration()` 在 iPad save-to-home 更稳）；返回带版本号
+- ✅ 「Reload」toast 按钮**推 `reg.waiting`** 不是 `controller`（0.10.4 修，WebPaint v60 教训：推 controller = 旧 SW，self.skipWaiting 是 no-op → 新 SW 永卡 waiting → reload 拿旧 cache → 死循环弹「有新版本」）。listen `controllerchange` 等新 SW 接管再 reload，5s 兜底防 iOS 偶发不 fire
+- ✅ Online 事件 silent retry sign-in（0.10.4，飞行模式启动 → 在线后 `activeAccount` 自动续命）
 
 AtlasMaker 没做（小到不必要）：
 - visualViewport listener（AtlasMaker 没 canvas pixel buffer 这条线，只有 CSS 拉伸 DOM；不会偏移）
 - Ghost pointer purge（AtlasMaker 不画笔触，不用纠结）
+
+## 7a. IDB error 处理（隐私窗口 / 配额耗尽）
+
+WebPaint v57 报告：user 用 iOS Safari 隐私窗口打开，listSessions 抛 SecurityError / QuotaExceededError →
+renderGallery 静默死在 await → 用户看到空白图库。AI 工程师上来诊断成「离线降级」，糊一堆 try/catch
+都不对 root cause。
+
+教训：
+- IDB 入口（listSessionIds / getSession / putSession）的失败要落到 UI（toast / 状态行），不能静默
+- 「隐私窗口 / 匿名模式」≠ 「离线」≠ 「未登录」—— 这三种状态都让云不能用但 root cause 不同
+- `navigator.onLine === false` 当 fast-path 可以信；`true` 不一定真在线（DNS 通 server 不可达也是 true）
+
+AtlasMaker 0.10.4 已做：refreshSessionsList 的 listSessionIds 出错时弹 toast 提示「可能是隐私窗口或配额」。
+其它 IDB 入口暂时没全套（getSession / putSession 自带 try/catch 已经能传到 save-button error state）。
 
 ## 8. 不抄 WebPaint 的（AtlasMaker 不需要）
 - 棋盘透明背景（atlas 都是普通图片）
@@ -182,6 +199,13 @@ AtlasMaker 没做（小到不必要）：
 
 - 0.9.11 — Coalesce v1，drain 条件 = _dirty
 - 0.9.12 — Coalesce v2 补「in-flight 非 explicit + pending explicit」漏；cloud-busy 旋转动画
+- 0.10.4 — WebPaint v57-v60 教训对齐：SW register 移到模块顶层（v58 / 死穴 dynamic-import + load）；
+  「Check for updates」菜单项（带版本号闭环）；Reload 按钮推 `reg.waiting` 不是 controller
+  + listen controllerchange 再 reload（v60 / 死循环修复）；online 事件 silent retry sign-in（v59）；
+  listSessionIds 加 try/catch + toast（v57 隐私窗口 IDB 教训）；eyedropper 改 WYSIWYG（采色时
+  应用 `ctx.filter` = obj.filters 同款 CSS string，所见 = 所采）
+- 0.10.3 — Flip H/V + Rotate 90°（非破坏，CSS transform）；Ctrl+Z 在 slider 上 work（input-focus
+  guard 改 scoped to text-edit types only：range / checkbox / color 等不挡）
 - 0.10.0 — **大对账**：
   - z-index 全局重整（doc 在 styles.css 顶）：5/10/15/20/30/50/55/56/60，对齐 WebPaint
   - Save 按钮 5+ 态（cloud-busy / saving / dirty / error / cloud-dirty / synced / local-only），SVG icon 按状态切换，dirty 蓝点 + synced 灰云对勾 + 旋转弧；移除 #saveStatus pill

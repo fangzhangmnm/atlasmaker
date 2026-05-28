@@ -133,3 +133,21 @@ export async function getToken() {
 
 export function getActiveAccount() { return activeAccount; }
 export function isSignedIn() { return !!activeAccount; }
+
+// boot 时离线（飞行模式 / 火车隧道）→ silent 抛错 → activeAccount = null → 后面 wifi 回来
+// isSignedIn() 仍然 false。在 online 事件 / 用户主动 refresh 时调这个再试一次。
+// (WebPaint v59 教训：[WebPaint/docs/sync-and-ui-shareback.md §7.1.1])
+export async function retrySilentSignIn() {
+  if (activeAccount) return true;
+  if (!isAuthConfigured() || !pca) return false;
+  const cached = pca.getAllAccounts();
+  if (cached.length === 0) return false;
+  try {
+    await pca.acquireTokenSilent({ scopes: SCOPES, account: cached[0] });
+    pca.setActiveAccount(cached[0]);
+    activeAccount = cached[0];
+    return true;
+  } catch (_) {
+    return false;
+  }
+}

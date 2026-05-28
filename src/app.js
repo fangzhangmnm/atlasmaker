@@ -2275,6 +2275,13 @@ cloudPushBtn.addEventListener("click", () => saveCurrentSession({ explicit: true
 // 想「拉云覆盖当前」的场景：在 gallery 里删本地后单击云端 tile 即等价。
 
 // 启动时尝试 MSAL init + 处理可能的 redirect 回调
+// 飞行模式 → 在线后 silent retry：boot 时离线 silent 抛错 → activeAccount=null →
+// isSignedIn() 永远 false 直到下次重启。online 事件回来时重试一次。
+window.addEventListener("online", async () => {
+  if (!cloud.isSignedIn()) await cloud.retrySilentSignIn();
+  refreshCloudUI();
+});
+
 cloud.initAuth().then(() => refreshCloudUI()).catch((e) => {
   console.warn("OneDrive init failed:", e);
   refreshCloudUI();
@@ -2318,28 +2325,35 @@ function showUpdate() {
   if (updateDismissed) return;
   document.getElementById("updateToast").classList.remove("hidden");
 }
-document.getElementById("updateReloadButton").addEventListener("click", () => {
-  navigator.serviceWorker?.controller?.postMessage({ type: "skip-waiting" });
-  location.reload();
+// 「Reload」按钮（toast）：必须推给 `reg.waiting`（新 SW），不是 `controller`（旧 SW）。
+// 旧 SW 收到 skip-waiting 自己已经 active 是 no-op；新 SW 永远卡 waiting；reload 又拿旧 cache → 死循环
+// 报「有新版本」。听 controllerchange 等新 SW 接管再 reload，没等到 5s 兜底。
+// (WebPaint v60 教训：[WebPaint/docs/pwa-update-detection.md §4.5])
+document.getElementById("updateReloadButton").addEventListener("click", async () => {
+  const reg = _swRegistration || (await navigator.serviceWorker?.getRegistration());
+  if (!reg || !reg.waiting) { location.reload(); return; }
+  let reloaded = false;
+  const doReload = () => { if (reloaded) return; reloaded = true; location.reload(); };
+  navigator.serviceWorker.addEventListener("controllerchange", doReload, { once: true });
+  reg.waiting.postMessage({ type: "skip-waiting" });
+  setTimeout(doReload, 5000);
 });
 document.getElementById("updateDismissButton").addEventListener("click", () => {
   updateDismissed = true;
   document.getElementById("updateToast").classList.add("hidden");
 });
 
+// SW 注册必须在**模块顶层**，不能 window.load —— 模块 dynamic import 异步，load 经常已 fire 完
+// → addEventListener("load",...) 永远不触发 → SW 根本没装 → iPad PWA 加主屏 + 飞行模式 = 找不到 server
+// (v58 WebPaint 教训：[WebPaint/docs/pwa-update-detection.md §0](../../WebPaint/docs/pwa-update-detection.md))
+let _swRegistration = null;
 if ("serviceWorker" in navigator && !LOCAL_DEV_HOSTS.has(location.hostname)) {
   // 路径 3：SW 主动告知 asset 变了
   navigator.serviceWorker.addEventListener("message", (e) => {
     if (e.data?.type === "asset-updated") showUpdate();
   });
-  window.addEventListener("load", async () => {
-    let registration;
-    try {
-      registration = await navigator.serviceWorker.register("./service-worker.js");
-    } catch (err) {
-      console.warn("SW register failed", err);
-      return;
-    }
+  navigator.serviceWorker.register("./service-worker.js").then((registration) => {
+    _swRegistration = registration;
     // 路径 1：开机检查 waiting
     if (registration.waiting && navigator.serviceWorker.controller) showUpdate();
     // 路径 2：本 session 内装到新 SW
@@ -2357,8 +2371,28 @@ if ("serviceWorker" in navigator && !LOCAL_DEV_HOSTS.has(location.hostname)) {
     });
     window.addEventListener("focus", pokeUpdate);
     setInterval(pokeUpdate, 10 * 60 * 1000);
-  });
+  }).catch((err) => { console.warn("SW register failed", err); });
 }
+
+// 手动「检测更新」菜单项：用 _swRegistration（iPad save-to-home-screen 模式下
+// getRegistration() 偶尔返 undefined，启动时存的 reg 更稳）。返回信息带版本号闭环。
+const menuCheckUpdate = document.getElementById("menuCheckUpdate");
+if (menuCheckUpdate) menuCheckUpdate.addEventListener("click", async () => {
+  closeHamburger();
+  showActionToast("Checking for updates…", 4000);
+  try {
+    const reg = _swRegistration || (await navigator.serviceWorker?.getRegistration());
+    if (!reg) { showActionToast("Service Worker not registered (reload the page)", 5000); return; }
+    await reg.update();
+    setTimeout(() => {
+      const v = self.ATLASMAKER_VERSION || window.ATLASMAKER_VERSION || "v?";
+      if (reg.waiting) showActionToast("New version available — click reload in the toast", 6000);
+      else showActionToast(`Up to date (${v})`, 4000);
+    }, 1500);
+  } catch (e) {
+    showActionToast("Check failed: " + (e?.message || e), 5000);
+  }
+});
 
 refreshHud();
 renderOverlay();
@@ -2537,7 +2571,9 @@ async function handleEyedropper({ obj, clientX, clientY }) {
     }
     const world = board.screenToWorld(clientX, clientY);
     const np = worldToNaturalPx(obj, world.x, world.y);
-    const color = await samplePixel(obj.blob, np.x, np.y);
+    // WYSIWYG：把 obj.filters 转 CSS filter 一并应用，采到屏幕上看到的色
+    const cssFilter = obj.filters ? filtersToCssString(obj.filters) : "";
+    const color = await samplePixel(obj.blob, np.x, np.y, cssFilter);
     const hex = colorToHex(color);
     await createSwatchAt(color, world.x, world.y);
     showActionToast(`Sampled ${hex} → swatch`);
@@ -2635,8 +2671,14 @@ async function refreshSessionsList() {
   renderSessionsBreadcrumb();
 
   // 1) 本地 IDB keys
+  // 出错就 toast 提示用户 —— iOS Safari 隐私窗口 IDB 受限 / 配额耗尽都会在这里抛。
+  // (WebPaint v57 教训：[WebPaint/docs/sync-and-ui-shareback.md §8](../../WebPaint/docs/sync-and-ui-shareback.md))
   let localKeys = [];
-  try { localKeys = await storage.listSessionIds(); } catch (e) { console.warn("list local failed", e); }
+  try { localKeys = await storage.listSessionIds(); }
+  catch (e) {
+    console.warn("list local failed", e);
+    showActionToast(`Couldn't read local storage: ${e.message || e}. Likely a private window or quota issue.`, 8000);
+  }
   localKeys = localKeys.filter((k) => typeof k === "string" && k.endsWith(".atlas.zip"));
   const localSet = new Set(localKeys);
 
@@ -3025,7 +3067,14 @@ galleryCurrentName.addEventListener("input", () => {
 document.getElementById("menuSessions").addEventListener("click", () => { closeHamburger(); openSessionsModal(); });
 document.getElementById("menuRename").addEventListener("click", () => { closeHamburger(); renameCurrentBoard(); });
 document.getElementById("sessionsCloseBtn").addEventListener("click", closeSessionsModal);
-document.getElementById("sessionsRefreshBtn").addEventListener("click", refreshSessionsList);
+document.getElementById("sessionsRefreshBtn").addEventListener("click", async () => {
+  // 用户主动刷 → 顺手 silent retry（处理 boot 离线 case）
+  if (!cloud.isSignedIn() && navigator.onLine !== false) {
+    await cloud.retrySilentSignIn();
+    refreshCloudUI();
+  }
+  await refreshSessionsList();
+});
 document.getElementById("sessionsNewBtn").addEventListener("click", async () => {
   // 默认在当前文件夹下新建
   const defaultText = _currentFolder ? `${_currentFolder}/Untitled` : "Untitled";
