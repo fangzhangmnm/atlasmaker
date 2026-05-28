@@ -213,44 +213,81 @@
       <span id="versionLabel" class="version">v?</span>
     </div>
 
-    <!-- viewport 属性浮窗（选中 viewport 时显示） -->
+    <!-- viewport 属性浮窗（0.11.0 重做：折叠分区 / 紧凑） -->
     <div id="viewportPanel" class="float-panel hidden" role="dialog" aria-label="Viewport properties">
       <div class="float-panel-head">
         <span class="float-panel-title">Viewport</span>
         <button id="viewportPanelClose" class="close-x" type="button" aria-label="Close">×</button>
       </div>
       <div class="float-panel-body">
-        <label class="row"><span class="row-label">Resolution</span>
-          <input id="vpResW" type="number" min="1" max="8192" step="1" value="1024" />
-          <span class="row-sep">×</span>
-          <input id="vpResH" type="number" min="1" max="8192" step="1" value="1024" />
-          <button id="vpLock" class="lock-btn" type="button" aria-pressed="false" title="Lock viewport: prevent move / rotate / resize"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 7.7-1.5"></path></svg></button>
-        </label>
-        <label class="row"><span class="row-label">Interp</span>
-          <select id="vpInterp">
-            <option value="linear">Linear (default)</option>
-            <option value="nearest">Nearest (pixel art)</option>
-          </select>
-        </label>
-        <label class="row"><span class="row-label">Binding</span>
-          <input id="vpBinding" type="text" list="btpTextureList" placeholder="Blender texture name (blank = unbound)" autocomplete="off" />
-          <datalist id="btpTextureList"></datalist>
-        </label>
-        <div class="row">
-          <button class="sheet-action" id="vpPush" type="button" title="Push by current binding: PUT if texture exists, POST to create otherwise">Push to Blender</button>
+        <div class="src-row">
+          <span id="vpNaturalLabel" class="src-text">—</span>
+          <button id="vpLock" class="ico-btn lock-btn" type="button" aria-pressed="false" title="Lock viewport — prevent move / rotate / resize"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 7.7-1.5"></path></svg></button>
         </div>
-        <div class="row z-row">
-          <button class="z-btn" id="vpZTop" type="button" title="Bring to front (Ctrl+Shift+])">⤒</button>
-          <button class="z-btn" id="vpZUp" type="button" title="Bring forward (Ctrl+])">↑</button>
-          <button class="z-btn" id="vpZDown" type="button" title="Send backward (Ctrl+[)">↓</button>
-          <button class="z-btn" id="vpZBottom" type="button" title="Send to back (Ctrl+Shift+[)">⤓</button>
-        </div>
-        <div class="row">
-          <button class="sheet-action" id="vpExport" type="button">Export PNG</button>
-          <button class="sheet-action" id="vpCopy" type="button">Copy to clipboard</button>
-        </div>
-        <div class="row">
-          <button class="sheet-action ghost" id="vpDelete" type="button">Delete</button>
+
+        <!-- Output 分区：分辨率 + interp -->
+        <details class="sect" open data-sect="output">
+          <summary>Output</summary>
+          <div class="sect-body">
+            <div class="srow">
+              <span class="srow-l">Res</span>
+              <input id="vpResW" type="number" min="1" max="8192" step="1" value="1024" style="flex:1 1 0; min-width:0;">
+              <span style="color:var(--ink-soft); font-size:11px;">×</span>
+              <input id="vpResH" type="number" min="1" max="8192" step="1" value="1024" style="flex:1 1 0; min-width:0;">
+            </div>
+            <label class="srow"><span class="srow-l">Interp</span>
+              <select id="vpInterp">
+                <option value="linear">Linear</option>
+                <option value="nearest">Nearest (pixel art)</option>
+              </select>
+            </label>
+          </div>
+        </details>
+
+        <!-- Binding -->
+        <details class="sect" open data-sect="binding">
+          <summary>Blender</summary>
+          <div class="sect-body">
+            <label class="srow"><span class="srow-l">Texture</span>
+              <input id="vpBinding" type="text" list="btpTextureList" placeholder="(unbound)" autocomplete="off">
+              <datalist id="btpTextureList"></datalist>
+            </label>
+            <div class="btn-row">
+              <button class="btn primary" id="vpPush" type="button" title="Push by current binding: PUT if texture exists, POST to create otherwise">Push to Blender</button>
+            </div>
+          </div>
+        </details>
+
+        <!-- Export -->
+        <details class="sect" data-sect="export">
+          <summary>Export</summary>
+          <div class="sect-body">
+            <div class="btn-row two-col">
+              <button class="btn" id="vpExport" type="button">PNG</button>
+              <button class="btn" id="vpCopy" type="button">Copy</button>
+            </div>
+          </div>
+        </details>
+
+        <div class="img-footer">
+          <div class="zord-row" role="group" aria-label="Z-order">
+            <button class="ico-btn" id="vpZTop" type="button" title="Bring to front (Ctrl+Shift+])">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="13" width="10" height="6" fill="currentColor" fill-opacity="0.18"/><rect x="9" y="10" width="10" height="6" fill="currentColor" fill-opacity="0.18"/><rect x="11" y="5" width="10" height="6" stroke-width="2"/></svg>
+            </button>
+            <button class="ico-btn" id="vpZUp" type="button" title="Bring forward (Ctrl+])">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="13" width="10" height="6" fill="currentColor" fill-opacity="0.18"/><rect x="6" y="6" width="10" height="6" stroke-width="2"/><path d="M11 4l-1-1-1 1"/></svg>
+            </button>
+            <button class="ico-btn" id="vpZDown" type="button" title="Send backward (Ctrl+[)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="10" height="6" fill="currentColor" fill-opacity="0.18"/><rect x="9" y="13" width="10" height="6" stroke-width="2"/><path d="M11 21l-1 1-1-1"/></svg>
+            </button>
+            <button class="ico-btn" id="vpZBottom" type="button" title="Send to back (Ctrl+Shift+[)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="5" width="10" height="6" fill="currentColor" fill-opacity="0.18"/><rect x="9" y="8" width="10" height="6" fill="currentColor" fill-opacity="0.18"/><rect x="11" y="13" width="10" height="6" stroke-width="2"/></svg>
+            </button>
+            <span class="zord-spacer"></span>
+            <button class="ico-btn danger" id="vpDelete" type="button" title="Delete (X / Del)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6M14 11v6"/></svg>
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -438,6 +475,7 @@
         <div class="chroma-preview-wrap">
           <canvas id="levelsPreview" class="chroma-preview"></canvas>
         </div>
+        <div id="levelsTabNav" class="tab-nav" role="tablist"></div>
         <label class="adjust-row"><span class="row-label">In black</span><input id="lvInBlack" type="range" min="0" max="254" step="1" value="0"><span class="adjust-value" id="lvInBlackVal">0</span></label>
         <label class="adjust-row"><span class="row-label">In white</span><input id="lvInWhite" type="range" min="1" max="255" step="1" value="255"><span class="adjust-value" id="lvInWhiteVal">255</span></label>
         <label class="adjust-row"><span class="row-label">Gamma</span><input id="lvGamma" type="range" min="0.1" max="3" step="0.01" value="1"><span class="adjust-value" id="lvGammaVal">1.00</span></label>
@@ -453,13 +491,14 @@
     <!-- Curves 对话框 -->
     <div id="curvesBackdrop" class="backdrop hidden" aria-hidden="true"></div>
     <div id="curvesDialog" class="form-dialog hidden" role="dialog" aria-modal="true">
-      <div class="form-head">Curves (master)</div>
+      <div class="form-head">Curves</div>
       <div class="form-body">
         <div class="form-warn">Destructive — Apply bakes into the image (Ctrl+Z reverts).</div>
         <div class="chroma-preview-wrap">
           <canvas id="curvesPreview" class="chroma-preview"></canvas>
         </div>
         <canvas id="curveGraph" class="curve-graph" width="200" height="120"></canvas>
+        <div id="curvesTabNav" class="tab-nav" role="tablist"></div>
         <label class="adjust-row"><span class="row-label">@32</span><input id="cvY32" type="range" min="0" max="255" step="1" value="32"><span class="adjust-value" id="cvY32Val">32</span></label>
         <label class="adjust-row"><span class="row-label">@64</span><input id="cvY64" type="range" min="0" max="255" step="1" value="64"><span class="adjust-value" id="cvY64Val">64</span></label>
         <label class="adjust-row"><span class="row-label">@128</span><input id="cvY128" type="range" min="0" max="255" step="1" value="128"><span class="adjust-value" id="cvY128Val">128</span></label>
@@ -476,12 +515,13 @@
     <!-- Color Balance 对话框 -->
     <div id="cbBackdrop" class="backdrop hidden" aria-hidden="true"></div>
     <div id="cbDialog" class="form-dialog hidden" role="dialog" aria-modal="true">
-      <div class="form-head">Color Balance · midtones</div>
+      <div class="form-head">Color Balance</div>
       <div class="form-body">
         <div class="form-warn">Destructive — Apply bakes into the image (Ctrl+Z reverts).</div>
         <div class="chroma-preview-wrap">
           <canvas id="cbPreview" class="chroma-preview"></canvas>
         </div>
+        <div id="cbTabNav" class="tab-nav" role="tablist"></div>
         <label class="adjust-row"><span class="row-label">Cyan-Red</span><input id="cbCR" type="range" min="-100" max="100" step="1" value="0"><span class="adjust-value" id="cbCRVal">0</span></label>
         <label class="adjust-row"><span class="row-label">Mag-Grn</span><input id="cbMG" type="range" min="-100" max="100" step="1" value="0"><span class="adjust-value" id="cbMGVal">0</span></label>
         <label class="adjust-row"><span class="row-label">Yel-Blu</span><input id="cbYB" type="range" min="-100" max="100" step="1" value="0"><span class="adjust-value" id="cbYBVal">0</span></label>
@@ -494,7 +534,22 @@
 
     <!-- Crop 模式底部 toolbar -->
     <div id="cropToolbar" class="crop-toolbar hidden" role="toolbar" aria-label="Crop">
-      <span class="crop-hint">Drag handles inward · Enter = apply · Esc = cancel</span>
+      <span class="crop-hint">Drag handles · Enter = apply · Esc = cancel</span>
+      <label class="srow" style="flex:0 0 auto">
+        <span class="srow-l" style="width:auto">Aspect</span>
+        <select id="cropAspect" style="width:auto">
+          <option value="free">Free</option>
+          <option value="1:1">1 : 1</option>
+          <option value="4:3">4 : 3</option>
+          <option value="3:2">3 : 2</option>
+          <option value="16:9">16 : 9</option>
+          <option value="3:4">3 : 4</option>
+          <option value="2:3">2 : 3</option>
+          <option value="9:16">9 : 16</option>
+          <option value="original">Original</option>
+        </select>
+      </label>
+      <span id="cropDimsLabel" class="crop-hint" style="font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; min-width: 100px;">— × — px</span>
       <button id="cropCancel" type="button" class="ghost">Cancel</button>
       <button id="cropApply" type="button" class="primary">Apply</button>
     </div>

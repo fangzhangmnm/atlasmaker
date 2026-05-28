@@ -1068,6 +1068,9 @@ function refreshPanels() {
     vpBinding.value = sel.binding || "";
     vpLock.setAttribute("aria-pressed", sel.locked ? "true" : "false");
     vpLock.innerHTML = sel.locked ? ICON_LOCK_CLOSED : ICON_LOCK_OPEN;
+    // 顶行：板上矩形尺寸 → 输出分辨率
+    const lbl = document.getElementById("vpNaturalLabel");
+    if (lbl) lbl.textContent = `Rect ${Math.round(sel.w)}×${Math.round(sel.h)} → out ${sel.resW}×${sel.resH}`;
   } else if (sel && sel.type === "image") {
     imgPanel.classList.remove("hidden");
     vpPanel.classList.add("hidden");
@@ -1625,79 +1628,238 @@ function _setupPixelFilterDialog({
 
 const $id = (id) => document.getElementById(id);
 
-// Levels
-const _levelsDlg = _setupPixelFilterDialog({
+// ----- 0.11.0 V2: tabbed pixel-filter dialog factory（per-channel / tonal-range）-----
+// 跟 _setupPixelFilterDialog 类似，但加 tab 切换：同一组 slider DOM，按 tab 切换显示哪个 channel/range 的值。
+// state.tabValues[tabKey] = { sliderKey: value, ... }
+function _setupTabbedFilterDialog({
+  dialog, backdrop, preview, applyBtn, cancelBtn, resetBtn,
+  sliders,         // [{ input, label, key, default, format }]
+  tabKeys,         // [{ key, label }]
+  tabNavId,        // ID 容器
+  applyFn,         // (imageData, fullState) where fullState = { tabKey: { sliderKey: val, ... }, ... }
+  busyLabel, onUpdate,
+}) {
+  let state = null;
+  const tabNav = document.getElementById(tabNavId);
+
+  function _readSlidersToState() {
+    if (!state) return;
+    const obj = {};
+    for (const s of sliders) obj[s.key] = parseFloat(s.input.value);
+    state.tabValues[state.activeTab] = obj;
+  }
+  function _writeStateToSliders() {
+    if (!state) return;
+    const obj = state.tabValues[state.activeTab];
+    for (const s of sliders) {
+      const v = obj[s.key];
+      s.input.value = v;
+      s.label.textContent = s.format(v);
+    }
+  }
+  function _highlightTabs() {
+    if (!tabNav) return;
+    for (const b of tabNav.querySelectorAll(".tab-btn")) {
+      b.classList.toggle("active", b.dataset.tab === state.activeTab);
+    }
+  }
+  function switchTab(key) {
+    if (!state) return;
+    _readSlidersToState();
+    state.activeTab = key;
+    _writeStateToSliders();
+    _highlightTabs();
+    update();
+  }
+  // 一次性 build tab 按钮
+  if (tabNav) {
+    tabNav.innerHTML = "";
+    for (const tk of tabKeys) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "tab-btn";
+      btn.dataset.tab = tk.key;
+      btn.textContent = tk.label;
+      btn.addEventListener("click", () => switchTab(tk.key));
+      tabNav.appendChild(btn);
+    }
+  }
+
+  function close() {
+    backdrop.classList.add("hidden");
+    dialog.classList.add("hidden");
+    state = null;
+  }
+  async function open() {
+    const sel = scene.firstSelected();
+    if (!sel || sel.type !== "image" || !sel.blob) {
+      showActionToast("Select an image first", 2500); return;
+    }
+    const { imageData, w, h } = await buildPreviewSource(sel.blob, 240);
+    preview.width = w;
+    preview.height = h;
+    const tabValues = {};
+    for (const tk of tabKeys) {
+      const def = {};
+      for (const s of sliders) def[s.key] = s.default;
+      tabValues[tk.key] = def;
+    }
+    state = {
+      objId: sel.id,
+      sourceImageData: imageData,
+      ctx: preview.getContext("2d"),
+      tabValues,
+      activeTab: tabKeys[0].key,
+    };
+    _writeStateToSliders();
+    _highlightTabs();
+    update();
+    backdrop.classList.remove("hidden");
+    dialog.classList.remove("hidden");
+  }
+  function _params() {
+    if (!state) return null;
+    _readSlidersToState();
+    return state.tabValues;
+  }
+  function update() {
+    if (!state) return;
+    const params = _params();
+    const fresh = new ImageData(
+      new Uint8ClampedArray(state.sourceImageData.data),
+      state.sourceImageData.width,
+      state.sourceImageData.height,
+    );
+    applyFn(fresh, params);
+    state.ctx.clearRect(0, 0, fresh.width, fresh.height);
+    state.ctx.putImageData(fresh, 0, 0);
+    if (onUpdate) onUpdate(params, state.activeTab);
+  }
+  for (const s of sliders) {
+    s.input.addEventListener("input", () => {
+      s.label.textContent = s.format(parseFloat(s.input.value));
+      update();
+    });
+  }
+  cancelBtn.addEventListener("click", close);
+  backdrop.addEventListener("click", close);
+  if (resetBtn) resetBtn.addEventListener("click", () => {
+    // 重置 ALL tabs 到默认
+    if (!state) return;
+    for (const tk of tabKeys) {
+      const def = {};
+      for (const s of sliders) def[s.key] = s.default;
+      state.tabValues[tk.key] = def;
+    }
+    _writeStateToSliders();
+    update();
+  });
+  dialog.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); applyBtn.click(); }
+    else if (e.key === "Escape") { e.preventDefault(); close(); }
+  });
+  applyBtn.addEventListener("click", async () => {
+    if (!state) return;
+    const { objId } = state;
+    const params = _params();
+    close();
+    const obj = scene.get(objId);
+    if (!obj || !obj.blob) return;
+    try {
+      const newBlob = await withBusy(busyLabel, () =>
+        bakeImageWithCanvasFilter(obj.blob, (id) => applyFn(id, params))
+      );
+      const newSrc = _newImageSrc(newBlob);
+      scene.act(() => scene.replaceImageBlob(objId, newBlob, newSrc));
+      showActionToast(`${busyLabel.replace(/…$/, "")} done`);
+    } catch (e) {
+      console.warn(`${busyLabel} failed`, e);
+      showActionToast(`Failed: ${e.message || e}`, 4000);
+    }
+  });
+  return { open };
+}
+
+// Levels V2 — 4 tabs (Master / R / G / B)
+const _levelsDlg = _setupTabbedFilterDialog({
   dialog: $id("levelsDialog"),
   backdrop: $id("levelsBackdrop"),
   preview: $id("levelsPreview"),
   applyBtn: $id("levelsApply"),
   cancelBtn: $id("levelsCancel"),
-  sliders: [
-    { input: $id("lvInBlack"), label: $id("lvInBlackVal"), default: 0, format: (v) => `${v | 0}` },
-    { input: $id("lvInWhite"), label: $id("lvInWhiteVal"), default: 255, format: (v) => `${v | 0}` },
-    { input: $id("lvGamma"), label: $id("lvGammaVal"), default: 1, format: (v) => v.toFixed(2) },
-    { input: $id("lvOutBlack"), label: $id("lvOutBlackVal"), default: 0, format: (v) => `${v | 0}` },
-    { input: $id("lvOutWhite"), label: $id("lvOutWhiteVal"), default: 255, format: (v) => `${v | 0}` },
+  tabNavId: "levelsTabNav",
+  tabKeys: [
+    { key: "master", label: "Master" },
+    { key: "r", label: "R" },
+    { key: "g", label: "G" },
+    { key: "b", label: "B" },
   ],
-  paramsFn: () => ({
-    inBlack: parseInt($id("lvInBlack").value, 10),
-    inWhite: parseInt($id("lvInWhite").value, 10),
-    gamma: parseFloat($id("lvGamma").value),
-    outBlack: parseInt($id("lvOutBlack").value, 10),
-    outWhite: parseInt($id("lvOutWhite").value, 10),
-  }),
+  sliders: [
+    { input: $id("lvInBlack"), label: $id("lvInBlackVal"), key: "inBlack", default: 0, format: (v) => `${v | 0}` },
+    { input: $id("lvInWhite"), label: $id("lvInWhiteVal"), key: "inWhite", default: 255, format: (v) => `${v | 0}` },
+    { input: $id("lvGamma"), label: $id("lvGammaVal"), key: "gamma", default: 1, format: (v) => v.toFixed(2) },
+    { input: $id("lvOutBlack"), label: $id("lvOutBlackVal"), key: "outBlack", default: 0, format: (v) => `${v | 0}` },
+    { input: $id("lvOutWhite"), label: $id("lvOutWhiteVal"), key: "outWhite", default: 255, format: (v) => `${v | 0}` },
+  ],
   applyFn: (id, p) => applyLevels(id, p),
   busyLabel: "Applying levels…",
 });
 $id("imgLevels").addEventListener("click", () => _levelsDlg.open());
 
-// Color Balance（midtones MVP）
-const _cbDlg = _setupPixelFilterDialog({
+// Color Balance V2 — 3 tabs (Shadows / Midtones / Highlights)
+const _cbDlg = _setupTabbedFilterDialog({
   dialog: $id("cbDialog"),
   backdrop: $id("cbBackdrop"),
   preview: $id("cbPreview"),
   applyBtn: $id("cbApply"),
   cancelBtn: $id("cbCancel"),
-  sliders: [
-    { input: $id("cbCR"), label: $id("cbCRVal"), default: 0, format: (v) => `${v | 0}` },
-    { input: $id("cbMG"), label: $id("cbMGVal"), default: 0, format: (v) => `${v | 0}` },
-    { input: $id("cbYB"), label: $id("cbYBVal"), default: 0, format: (v) => `${v | 0}` },
+  tabNavId: "cbTabNav",
+  tabKeys: [
+    { key: "shadows", label: "Shadows" },
+    { key: "midtones", label: "Midtones" },
+    { key: "highlights", label: "Highlights" },
   ],
-  paramsFn: () => ({
-    cr: parseInt($id("cbCR").value, 10),
-    mg: parseInt($id("cbMG").value, 10),
-    yb: parseInt($id("cbYB").value, 10),
-  }),
+  sliders: [
+    { input: $id("cbCR"), label: $id("cbCRVal"), key: "cr", default: 0, format: (v) => `${v | 0}` },
+    { input: $id("cbMG"), label: $id("cbMGVal"), key: "mg", default: 0, format: (v) => `${v | 0}` },
+    { input: $id("cbYB"), label: $id("cbYBVal"), key: "yb", default: 0, format: (v) => `${v | 0}` },
+  ],
   applyFn: (id, p) => applyColorBalance(id, p),
   busyLabel: "Applying color balance…",
 });
 $id("imgColorBalance").addEventListener("click", () => _cbDlg.open());
 
-// Curves（master MVP，5 个控制点 = 5 个滑块）
-// onUpdate 还顺手画一下 LUT 曲线到 #curveGraph 让用户看形状
+// Curves V2 — 4 tabs + curve graph shows active channel
 const _curveGraph = $id("curveGraph");
 const _curveGraphCtx = _curveGraph.getContext("2d");
-function _drawCurveGraph(yValues) {
+const _curveChannelColors = {
+  master: getComputedStyle(document.documentElement).getPropertyValue("--accent") || "#8a481e",
+  r: "#e54e3a",
+  g: "#3fae5f",
+  b: "#4f7adf",
+};
+function _drawCurveGraphForTab(tabValuesObj, activeTab) {
+  // tabValuesObj = { y32, y64, y128, y192, y224 }（活 tab）
+  if (!tabValuesObj) return;
+  const ys = [tabValuesObj.y32, tabValuesObj.y64, tabValuesObj.y128, tabValuesObj.y192, tabValuesObj.y224];
   const w = _curveGraph.width, h = _curveGraph.height;
   _curveGraphCtx.clearRect(0, 0, w, h);
-  // 网格背景
+  // 网格
   _curveGraphCtx.strokeStyle = "rgba(127,127,127,0.25)";
   _curveGraphCtx.lineWidth = 1;
   for (let i = 1; i < 4; i++) {
-    const x = (w * i) / 4;
-    const y = (h * i) / 4;
+    const x = (w * i) / 4, y = (h * i) / 4;
     _curveGraphCtx.beginPath(); _curveGraphCtx.moveTo(x, 0); _curveGraphCtx.lineTo(x, h); _curveGraphCtx.stroke();
     _curveGraphCtx.beginPath(); _curveGraphCtx.moveTo(0, y); _curveGraphCtx.lineTo(w, y); _curveGraphCtx.stroke();
   }
-  // identity 对角线
+  // identity
   _curveGraphCtx.strokeStyle = "rgba(127,127,127,0.5)";
   _curveGraphCtx.setLineDash([3, 3]);
   _curveGraphCtx.beginPath(); _curveGraphCtx.moveTo(0, h); _curveGraphCtx.lineTo(w, 0); _curveGraphCtx.stroke();
   _curveGraphCtx.setLineDash([]);
-  // 实际 LUT 曲线
-  const lut = buildCurveLut(yValues);
-  _curveGraphCtx.strokeStyle = "var(--accent)";
-  _curveGraphCtx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--accent") || "#8a481e";
+  // LUT 曲线
+  const lut = buildCurveLut(ys);
+  _curveGraphCtx.strokeStyle = _curveChannelColors[activeTab] || _curveChannelColors.master;
   _curveGraphCtx.lineWidth = 2;
   _curveGraphCtx.beginPath();
   for (let i = 0; i < 256; i++) {
@@ -1707,37 +1869,42 @@ function _drawCurveGraph(yValues) {
   }
   _curveGraphCtx.stroke();
   // 控制点
-  _curveGraphCtx.fillStyle = "currentColor";
+  _curveGraphCtx.fillStyle = _curveGraphCtx.strokeStyle;
   const xs = [32, 64, 128, 192, 224];
   for (let i = 0; i < 5; i++) {
     const x = (xs[i] / 255) * w;
-    const y = h - (yValues[i] / 255) * h;
+    const y = h - (ys[i] / 255) * h;
     _curveGraphCtx.beginPath(); _curveGraphCtx.arc(x, y, 3, 0, Math.PI * 2); _curveGraphCtx.fill();
   }
 }
-const _curvesDlg = _setupPixelFilterDialog({
+const _curvesDlg = _setupTabbedFilterDialog({
   dialog: $id("curvesDialog"),
   backdrop: $id("curvesBackdrop"),
   preview: $id("curvesPreview"),
   applyBtn: $id("curvesApply"),
   cancelBtn: $id("curvesCancel"),
   resetBtn: $id("curvesReset"),
+  tabNavId: "curvesTabNav",
+  tabKeys: [
+    { key: "master", label: "Master" },
+    { key: "r", label: "R" },
+    { key: "g", label: "G" },
+    { key: "b", label: "B" },
+  ],
   sliders: [
-    { input: $id("cvY32"),  label: $id("cvY32Val"),  default: 32,  format: (v) => `${v | 0}` },
-    { input: $id("cvY64"),  label: $id("cvY64Val"),  default: 64,  format: (v) => `${v | 0}` },
-    { input: $id("cvY128"), label: $id("cvY128Val"), default: 128, format: (v) => `${v | 0}` },
-    { input: $id("cvY192"), label: $id("cvY192Val"), default: 192, format: (v) => `${v | 0}` },
-    { input: $id("cvY224"), label: $id("cvY224Val"), default: 224, format: (v) => `${v | 0}` },
+    { input: $id("cvY32"),  label: $id("cvY32Val"),  key: "y32",  default: 32,  format: (v) => `${v | 0}` },
+    { input: $id("cvY64"),  label: $id("cvY64Val"),  key: "y64",  default: 64,  format: (v) => `${v | 0}` },
+    { input: $id("cvY128"), label: $id("cvY128Val"), key: "y128", default: 128, format: (v) => `${v | 0}` },
+    { input: $id("cvY192"), label: $id("cvY192Val"), key: "y192", default: 192, format: (v) => `${v | 0}` },
+    { input: $id("cvY224"), label: $id("cvY224Val"), key: "y224", default: 224, format: (v) => `${v | 0}` },
   ],
-  paramsFn: () => [
-    parseInt($id("cvY32").value, 10),
-    parseInt($id("cvY64").value, 10),
-    parseInt($id("cvY128").value, 10),
-    parseInt($id("cvY192").value, 10),
-    parseInt($id("cvY224").value, 10),
-  ],
-  applyFn: (id, ys) => applyCurves(id, ys),
-  onUpdate: (ys) => _drawCurveGraph(ys),
+  applyFn: (id, p) => {
+    // p = { master: {y32,y64,y128,y192,y224}, r: {...}, ... }
+    // 转成 applyCurves V2 接受的 {master: [array], r: [array], ...} 形式
+    const conv = (o) => o ? [o.y32, o.y64, o.y128, o.y192, o.y224] : null;
+    return applyCurves(id, { master: conv(p.master), r: conv(p.r), g: conv(p.g), b: conv(p.b) });
+  },
+  onUpdate: (params, activeTab) => _drawCurveGraphForTab(params[activeTab], activeTab),
   busyLabel: "Applying curves…",
 });
 $id("imgCurves").addEventListener("click", () => _curvesDlg.open());
@@ -2157,15 +2324,32 @@ function enterCropMode(obj) {
     obj,
     bounds,
     initialRect,
-    onChange: () => renderOverlay(),
+    onChange: () => { renderOverlay(); _cropUpdateDimsLabel(); },
     onApply: ({ rect }) => doApplyCrop(obj.id, rect),
     onCancel: () => exitCropMode({ restoreOrig: true }),
   });
   overlayEl.innerHTML = "";
   _cropDom = _buildCropDom();
   cropToolbar.classList.remove("hidden");
+  if (cropAspectSelect) cropAspectSelect.value = "free"; // 进 mode 默认 Free
   document.body.dataset.cropMode = "1";
   renderOverlay();
+  _cropUpdateDimsLabel();
+}
+
+// aspect select 变化 → 强制 crop rect 按新 ratio 调整（对当前 rect 做 setRect 触发 clamp + onChange）
+if (cropAspectSelect) {
+  cropAspectSelect.addEventListener("change", () => {
+    const r = crop.getRect();
+    if (!r) return;
+    const ar = _cropTargetAspect();
+    if (!ar) { _cropUpdateDimsLabel(); return; }
+    // 围绕 rect 中心按新 ratio 调整：保 max(w, h)，让 H = W/AR 或 W = H*AR 取小的，居中
+    const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+    let newW = r.w, newH = r.w / ar;
+    if (newH > r.h) { newH = r.h; newW = r.h * ar; }
+    crop.setRect({ x: cx - newW / 2, y: cy - newH / 2, w: newW, h: newH });
+  });
 }
 
 function exitCropMode({ restoreOrig = false } = {}) {
@@ -2272,6 +2456,40 @@ function onCropHandlePointerDown(ev) {
   ev.currentTarget.addEventListener("pointerup", onCropHandlePointerUp);
   ev.currentTarget.addEventListener("pointercancel", onCropHandlePointerUp);
 }
+// Crop aspect lock：toolbar 下拉 + dims label。Free / 1:1 / 16:9 等 / Original（= obj natural aspect）。
+// Aspect 非 free 时拖 handle 强制按 ratio 调整对边；输出 ratio = W / H。
+const cropAspectSelect = document.getElementById("cropAspect");
+const cropDimsLabel = document.getElementById("cropDimsLabel");
+function _cropTargetAspect() {
+  if (!_cropOrig || !cropAspectSelect) return null;
+  const v = cropAspectSelect.value || "free";
+  if (v === "free") return null;
+  if (v === "original") {
+    // 原图 natural aspect
+    const obj = scene.get(crop.activeObjId());
+    if (!obj) return null;
+    return obj.naturalW / obj.naturalH;
+  }
+  const [a, b] = v.split(":").map(Number);
+  if (!a || !b) return null;
+  return a / b;
+}
+function _cropUpdateDimsLabel() {
+  if (!cropDimsLabel) return;
+  const rect = crop.getRect();
+  const objId = crop.activeObjId();
+  const obj = scene.get(objId);
+  if (!rect || !obj) { cropDimsLabel.textContent = "— × — px"; return; }
+  // dims in natural px（rect 是世界坐标，按 obj.w/h ↔ naturalW/H 比例转）
+  // 注意：obj 在 crop mode 已经 temp-expanded 到 full natural（如果之前 cropped），
+  // 所以 obj.naturalW / obj.w = natural per world
+  const wpnX = obj.w / obj.naturalW;
+  const wpnY = obj.h / obj.naturalH;
+  const natW = Math.round(rect.w / wpnX);
+  const natH = Math.round(rect.h / wpnY);
+  cropDimsLabel.textContent = `${natW} × ${natH} px`;
+}
+
 function onCropHandlePointerMove(ev) {
   if (!_cropDragState) return;
   const s = _cropDragState;
@@ -2284,6 +2502,32 @@ function onCropHandlePointerMove(ev) {
   if (s.anchor.includes("s")) { rh += dy; }
   if (s.anchor.includes("w")) { x += dx; rw -= dx; }
   if (s.anchor.includes("e")) { rw += dx; }
+  // Aspect lock：拖完之后按比例修副轴。corner = 跟手主导轴长一点的；edge = 锁那一轴
+  const targetAR = _cropTargetAspect();
+  if (targetAR) {
+    const cornerH = s.anchor.includes("n") || s.anchor.includes("s");
+    const cornerV = s.anchor.includes("e") || s.anchor.includes("w");
+    if (cornerH && cornerV) {
+      // 角：W 跟手，H = W / AR；保持当前 anchor 固定（对边不动）
+      const newH = rw / targetAR;
+      const fixedSide = s.anchor.includes("n") ? "bottom" : "top";
+      if (fixedSide === "bottom") {
+        const bottom = s.startRect.y + s.startRect.h;
+        y = bottom - newH;
+      }
+      rh = newH;
+    } else if (cornerV) {
+      // 左 / 右 边：W 已经跟手 → H = W / AR；H 居中调（顶 + 底 各一半）
+      const oldH = rh;
+      rh = rw / targetAR;
+      y -= (rh - oldH) / 2;
+    } else {
+      // 上 / 下 边：H 已经跟手 → W = H × AR；W 居中调
+      const oldW = rw;
+      rw = rh * targetAR;
+      x -= (rw - oldW) / 2;
+    }
+  }
   crop.setRect({ x, y, w: rw, h: rh });
 }
 function onCropHandlePointerUp(ev) {

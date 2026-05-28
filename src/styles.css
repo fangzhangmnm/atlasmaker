@@ -1111,6 +1111,21 @@ body[data-mode="gallery"] .crop-toolbar { display: none !important; }
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
   pointer-events: none;
 }
+/* Rule of thirds 网格（在 .crop-rect 里画 4 条线） */
+.crop-rect::before, .crop-rect::after {
+  content: "";
+  position: absolute;
+  background:
+    linear-gradient(to right, transparent calc(33.333% - 0.5px), rgba(255,255,255,0.45) calc(33.333% - 0.5px), rgba(255,255,255,0.45) calc(33.333% + 0.5px), transparent calc(33.333% + 0.5px), transparent calc(66.666% - 0.5px), rgba(255,255,255,0.45) calc(66.666% - 0.5px), rgba(255,255,255,0.45) calc(66.666% + 0.5px), transparent calc(66.666% + 0.5px));
+  pointer-events: none;
+  filter: drop-shadow(0 0 1px rgba(0,0,0,0.5));
+}
+.crop-rect::before { inset: 0; }
+.crop-rect::after {
+  inset: 0;
+  background:
+    linear-gradient(to bottom, transparent calc(33.333% - 0.5px), rgba(255,255,255,0.45) calc(33.333% - 0.5px), rgba(255,255,255,0.45) calc(33.333% + 0.5px), transparent calc(33.333% + 0.5px), transparent calc(66.666% - 0.5px), rgba(255,255,255,0.45) calc(66.666% - 0.5px), rgba(255,255,255,0.45) calc(66.666% + 0.5px), transparent calc(66.666% + 0.5px));
+}
 /* Word / Photoshop 风格 handle：
    - 角 = L 形（两条短直线在角点垂直相交）
    - 边 = 居中的一条短直线
@@ -1328,6 +1343,37 @@ body[data-mode="gallery"] .crop-toolbar { display: none !important; }
   background: var(--bg-soft);
   border: 1px solid var(--line);
   border-radius: 0;
+}
+/* Tab nav for V2 multi-channel / multi-range filters */
+.tab-nav {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--line);
+  margin: 4px 0 2px;
+}
+.tab-btn {
+  flex: 1;
+  border: 1px solid var(--line);
+  border-bottom: none;
+  border-left-width: 0;
+  background: var(--bg-soft);
+  color: var(--ink-soft);
+  font-size: 11px;
+  padding: 4px 6px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+.tab-btn:first-child { border-left-width: 1px; }
+.tab-btn:hover { background: var(--bg); color: var(--ink); }
+.tab-btn.active {
+  background: var(--bg);
+  color: var(--accent);
+  font-weight: 600;
+  border-color: var(--accent);
+  position: relative;
+  z-index: 1;
+  margin-bottom: -1px;
 }
 .form-mini-btn {
   padding: 4px 10px;

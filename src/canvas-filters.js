@@ -13,13 +13,8 @@
 // 用 canvas 替换 img，或 WebGL shader）。MVP 先 master channel + modal preview。
 
 // ===== Levels =====
-//   input range [inBlack..inWhite] 拉伸到 [outBlack..outWhite]，中间走 gamma 曲线。
-//   - inBlack < inWhite, 0..255
-//   - gamma > 0；< 1 = 暗调下沉；> 1 = 暗调拉亮
-//   - outBlack < outWhite, 0..255
-// 等价 Photoshop Image > Adjustments > Levels（不分 channel 的 MVP）。
-export function applyLevels(imageData, { inBlack = 0, inWhite = 255, gamma = 1, outBlack = 0, outWhite = 255 }) {
-  // 预先 LUT 化，每像素就 3 次查表
+// 单 channel LUT 生成 helper
+function _buildLevelsLut({ inBlack = 0, inWhite = 255, gamma = 1, outBlack = 0, outWhite = 255 } = {}) {
   const lut = new Uint8ClampedArray(256);
   const inRange = Math.max(1, inWhite - inBlack);
   const outRange = outWhite - outBlack;
@@ -30,11 +25,25 @@ export function applyLevels(imageData, { inBlack = 0, inWhite = 255, gamma = 1, 
     v = Math.pow(v, invGamma);
     lut[i] = Math.max(0, Math.min(255, Math.round(outBlack + v * outRange)));
   }
+  return lut;
+}
+const _idLut = (() => { const a = new Uint8ClampedArray(256); for (let i = 0; i < 256; i++) a[i] = i; return a; })();
+
+// 0.10.7 旧签名（向后兼容）：master only
+export function applyLevels(imageData, params) {
+  // 检测 V1 (扁平) 还是 V2 (per-channel)
+  const isV2 = params && (params.master || params.r || params.g || params.b);
+  const m = isV2 ? params.master : params;
+  const masterLut = m ? _buildLevelsLut(m) : _idLut;
+  const rLut = isV2 && params.r ? _buildLevelsLut(params.r) : _idLut;
+  const gLut = isV2 && params.g ? _buildLevelsLut(params.g) : _idLut;
+  const bLut = isV2 && params.b ? _buildLevelsLut(params.b) : _idLut;
   const d = imageData.data;
   for (let i = 0; i < d.length; i += 4) {
-    d[i]     = lut[d[i]];
-    d[i + 1] = lut[d[i + 1]];
-    d[i + 2] = lut[d[i + 2]];
+    // 先 master，再 per-channel
+    d[i]     = rLut[masterLut[d[i]]];
+    d[i + 1] = gLut[masterLut[d[i + 1]]];
+    d[i + 2] = bLut[masterLut[d[i + 2]]];
   }
   return imageData;
 }
@@ -61,38 +70,52 @@ export function buildCurveLut(yValues) {
   return lut;
 }
 
+// 0.10.7 旧签名：yValues = 数组（master）。V2：yValues = { master: [...], r: [...], g: [...], b: [...] }
 export function applyCurves(imageData, yValues) {
-  const lut = buildCurveLut(yValues);
+  const isV2 = yValues && !Array.isArray(yValues);
+  const m = isV2 ? yValues.master : yValues;
+  const masterLut = m ? buildCurveLut(m) : _idLut;
+  const rLut = isV2 && yValues.r ? buildCurveLut(yValues.r) : _idLut;
+  const gLut = isV2 && yValues.g ? buildCurveLut(yValues.g) : _idLut;
+  const bLut = isV2 && yValues.b ? buildCurveLut(yValues.b) : _idLut;
   const d = imageData.data;
   for (let i = 0; i < d.length; i += 4) {
-    d[i]     = lut[d[i]];
-    d[i + 1] = lut[d[i + 1]];
-    d[i + 2] = lut[d[i + 2]];
+    d[i]     = rLut[masterLut[d[i]]];
+    d[i + 1] = gLut[masterLut[d[i + 1]]];
+    d[i + 2] = bLut[masterLut[d[i + 2]]];
   }
   return imageData;
 }
 
-// ===== Color Balance（midtones MVP）=====
-//   3 个滑块 cr / mg / yb（-100..+100）。midtone 加权：高斯峰在 128，端点 0。
-//   等价 Photoshop Color Balance 的 Midtones tonal range（不分 Shadows/Highlights 的 MVP）。
-export function applyColorBalance(imageData, { cr = 0, mg = 0, yb = 0 }) {
-  // strength 0..1 per pixel based on midtone-ness (peak at 128)
-  // weight 用 Gaussian-ish：exp(-((v-128)/64)^2)
-  const weight = new Float32Array(256);
+// ===== Color Balance（V2：shadows + midtones + highlights） =====
+// V1（旧签名）：{ cr, mg, yb } → 当 midtones 用
+// V2：{ shadows: {cr,mg,yb}, midtones: {cr,mg,yb}, highlights: {cr,mg,yb} }
+export function applyColorBalance(imageData, params) {
+  const isV2 = params && (params.shadows || params.midtones || params.highlights);
+  const sh = isV2 ? (params.shadows || { cr:0, mg:0, yb:0 }) : { cr:0, mg:0, yb:0 };
+  const md = isV2 ? (params.midtones || { cr:0, mg:0, yb:0 }) : (params || { cr:0, mg:0, yb:0 });
+  const hi = isV2 ? (params.highlights || { cr:0, mg:0, yb:0 }) : { cr:0, mg:0, yb:0 };
+  // 3 个权重 LUT：shadows 峰在 0、midtones 峰在 128、highlights 峰在 255。
+  const wS = new Float32Array(256);
+  const wM = new Float32Array(256);
+  const wH = new Float32Array(256);
   for (let i = 0; i < 256; i++) {
-    const t = (i - 128) / 64;
-    weight[i] = Math.exp(-t * t);
+    wS[i] = Math.exp(-Math.pow(i / 64, 2));
+    wM[i] = Math.exp(-Math.pow((i - 128) / 64, 2));
+    wH[i] = Math.exp(-Math.pow((i - 255) / 64, 2));
   }
   const d = imageData.data;
-  const k = 0.6; // 强度系数（滑块 100 → 60 单位）
+  const k = 0.6;
   for (let i = 0; i < d.length; i += 4) {
     const r = d[i], g = d[i + 1], b = d[i + 2];
-    // 用 luminance 的权重，比单 channel 稳
     const lum = (r * 0.299 + g * 0.587 + b * 0.114) | 0;
-    const w = weight[lum];
-    d[i]     = Math.max(0, Math.min(255, r + cr * w * k));
-    d[i + 1] = Math.max(0, Math.min(255, g + mg * w * k));
-    d[i + 2] = Math.max(0, Math.min(255, b + yb * w * k));
+    const s = wS[lum], m = wM[lum], h = wH[lum];
+    const dr = (sh.cr * s + md.cr * m + hi.cr * h) * k;
+    const dg = (sh.mg * s + md.mg * m + hi.mg * h) * k;
+    const db = (sh.yb * s + md.yb * m + hi.yb * h) * k;
+    d[i]     = Math.max(0, Math.min(255, r + dr));
+    d[i + 1] = Math.max(0, Math.min(255, g + dg));
+    d[i + 2] = Math.max(0, Math.min(255, b + db));
   }
   return imageData;
 }
