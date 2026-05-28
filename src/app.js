@@ -1340,15 +1340,11 @@ rasterApplyBtn.addEventListener("click", async () => {
 
 imgRasterizeBtn.addEventListener("click", () => openRasterizeDialog());
 
-// ----- Adjust 调色 filter chain -----
+// ----- Color 调色 filter chain（0.10.6 合进 #imagePanel Color 分区）-----
 // 非破坏：滑块改 obj.filters → _applyTransform 写 img.style.filter（CSS GPU 合成，实时预览零成本）。
 // Bake：Rasterize 时 raster.js 把同样的 filter 字符串挂 ctx.filter 烤进新 blob。
 // Undo coalesce：每次拖滑块只生成 1 个 undo entry（pointerdown 起 beginAct，pointerup 起 endAct）。
-const adjustPanel = document.getElementById("adjustPanel");
-const adjustResetBtn = document.getElementById("adjustReset");
-const adjustPanelCloseBtn = document.getElementById("adjustPanelClose");
-const adjustSliders = adjustPanel ? adjustPanel.querySelectorAll('input[type="range"][data-filter]') : [];
-const adjustValueLabels = adjustPanel ? adjustPanel.querySelectorAll(".adjust-value") : [];
+const adjustSliders = imgPanel.querySelectorAll('input[type="range"][data-filter]');
 
 function _adjustTargetObj() {
   const sel = scene.firstSelected();
@@ -1360,26 +1356,12 @@ function _syncAdjustPanelToObj(obj) {
     const key = slider.dataset.filter;
     const v = f[key] || 0;
     slider.value = v;
-    const label = adjustPanel.querySelector(`.adjust-value[data-for="${key}"]`);
+    const label = imgPanel.querySelector(`.adjust-value[data-for="${key}"]`);
     if (label) label.textContent = key === "hue" ? `${v}°` : `${v}`;
   }
 }
-function openAdjustPanel() {
-  const obj = _adjustTargetObj();
-  if (!obj) { showActionToast("Select an image first", 2500); return; }
-  _syncAdjustPanelToObj(obj);
-  adjustPanel.classList.remove("hidden");
-}
-function closeAdjustPanel() {
-  adjustPanel.classList.add("hidden");
-}
-
-document.getElementById("imgAdjust").addEventListener("click", () => openAdjustPanel());
 
 // ----- Flip / Rotate 90° -----
-// 非破坏：obj.flipH / obj.flipV / obj.rotation 通过 CSS transform 渲染（objects.js _applyTransform）。
-// 不烤 blob → undo 零开销、Rasterize 时可一并 bake（未来要做的话改 raster.js）。
-// 旋转把现有 rotation +90 / -90 加上去再 normalize 到 (-180, 180]。
 function _rotateBy(deg) {
   const sel = scene.firstSelected();
   if (!sel) return;
@@ -1398,30 +1380,19 @@ document.getElementById("imgRotL").addEventListener("click", () => _rotateBy(-90
 document.getElementById("imgRotR").addEventListener("click", () => _rotateBy(90));
 document.getElementById("imgFlipH").addEventListener("click", () => _toggleFlip("h"));
 document.getElementById("imgFlipV").addEventListener("click", () => _toggleFlip("v"));
-adjustPanelCloseBtn.addEventListener("click", () => closeAdjustPanel());
 
-// 选区变 → 同步 panel 滑块到新 obj.filters（若 panel 还开着）
+// 选区变 → 同步 sliders 到新 obj.filters（image panel 可见时）
 scene.onChange(() => {
-  if (!adjustPanel.classList.contains("hidden")) {
+  if (!imgPanel.classList.contains("hidden")) {
     const obj = _adjustTargetObj();
     if (obj) _syncAdjustPanelToObj(obj);
-    else closeAdjustPanel(); // 选区没了 / 选了 viewport → 自动关
   }
 });
 
-// Slider 拖拽：pointerdown beginAct，input 期间只 update（不推 undo），pointerup endAct
-// 多个滑块共用一个 act —— 同一次「调色操作」一个 undo entry，即使拖了多个滑块也合一。
+// Slider 拖拽：一次拖 = 一个 undo entry（pointerdown beginAct / pointerup endAct）
 let _adjustActOpen = false;
-function _adjustBegin() {
-  if (_adjustActOpen) return;
-  scene.beginAct();
-  _adjustActOpen = true;
-}
-function _adjustCommit() {
-  if (!_adjustActOpen) return;
-  scene.endAct();
-  _adjustActOpen = false;
-}
+function _adjustBegin() { if (_adjustActOpen) return; scene.beginAct(); _adjustActOpen = true; }
+function _adjustCommit() { if (!_adjustActOpen) return; scene.endAct(); _adjustActOpen = false; }
 for (const slider of adjustSliders) {
   slider.addEventListener("pointerdown", _adjustBegin);
   slider.addEventListener("input", () => {
@@ -1431,22 +1402,16 @@ for (const slider of adjustSliders) {
     const val = parseInt(slider.value, 10) || 0;
     const newFilters = { ...(obj.filters || {}), [key]: val };
     scene.update(obj.id, { filters: newFilters });
-    const label = adjustPanel.querySelector(`.adjust-value[data-for="${key}"]`);
+    const label = imgPanel.querySelector(`.adjust-value[data-for="${key}"]`);
     if (label) label.textContent = key === "hue" ? `${val}°` : `${val}`;
   });
   slider.addEventListener("pointerup", _adjustCommit);
   slider.addEventListener("pointercancel", _adjustCommit);
-  // 键盘改值（focus + 方向键）也要 act 包裹
-  slider.addEventListener("change", () => {
-    // change 在拖完或键盘改完触发；act 已在 pointerup commit，键盘场景下没 pointer 事件 → 这里兜底
-    if (!_adjustActOpen) return; // pointer 路径已 commit
-  });
   slider.addEventListener("keydown", () => { if (!_adjustActOpen) _adjustBegin(); });
   slider.addEventListener("keyup", () => { if (_adjustActOpen) _adjustCommit(); });
 }
 
-// Reset all：单 act 一次，把所有 filters 清零
-adjustResetBtn.addEventListener("click", () => {
+document.getElementById("adjustReset").addEventListener("click", () => {
   const obj = _adjustTargetObj();
   if (!obj) return;
   scene.act(() => scene.update(obj.id, { filters: undefined }));
@@ -2227,34 +2192,29 @@ function downloadBlob(blob, name) {
 }
 
 // ----- OneDrive 同步 -----
-const cloudPill = document.getElementById("cloudPill");
-const cloudLabel = document.getElementById("cloudLabel");
-// cloudPushBtn 在 updateSaveBtnState 块里已经 declared，不在这里重复
+// 0.10.6：cloudPill 移除 —— save 按钮的 5 态 icon 已经传达云端状态，pill 是多余信息。
+// Sign in / out 进汉堡菜单 #menuCloudAuth，label 跟 state 同步。
 
+const menuCloudAuthLabel = document.getElementById("menuCloudAuthLabel");
 function refreshCloudUI() {
-  const signedIn = cloud.isSignedIn();
-  // save 按钮 disabled / icon / title 都由 updateSaveBtnState 统一管 —— 这里不再 touch
+  // save 按钮 icon / title 由 updateSaveBtnState 统一管（5 态视觉传达状态）
   updateSaveBtnState();
-  if (!cloud.isAuthConfigured()) {
-    cloudPill.dataset.state = "disconnected";
-    cloudLabel.textContent = "OneDrive not configured";
-    cloudPill.title = "Set CLIENT_ID in src/config.js (Azure App Registration)";
-    return;
-  }
-  if (signedIn) {
-    const acc = cloud.getActiveAccount();
-    const tag = (acc?.username || acc?.name || "Signed in").replace(/@.*/, "");
-    cloudPill.dataset.state = "connected";
-    cloudLabel.textContent = `OneDrive · ${tag}`;
-    cloudPill.title = `Signed in: ${acc?.username || ""}\nClick to sign out`;
-  } else {
-    cloudPill.dataset.state = "disconnected";
-    cloudLabel.textContent = "OneDrive";
-    cloudPill.title = "Click to sign in to OneDrive";
+  // 汉堡菜单 sign in/out label
+  if (menuCloudAuthLabel) {
+    if (!cloud.isAuthConfigured()) {
+      menuCloudAuthLabel.textContent = "OneDrive not configured";
+    } else if (cloud.isSignedIn()) {
+      const acc = cloud.getActiveAccount();
+      const tag = (acc?.username || acc?.name || "").replace(/@.*/, "");
+      menuCloudAuthLabel.textContent = `Sign out (${tag})`;
+    } else {
+      menuCloudAuthLabel.textContent = "Sign in to OneDrive";
+    }
   }
 }
 
-cloudPill.addEventListener("click", async () => {
+document.getElementById("menuCloudAuth").addEventListener("click", async () => {
+  closeHamburger();
   if (!cloud.isAuthConfigured()) {
     showActionToast("OneDrive not configured — set CLIENT_ID in src/config.js", 5000);
     return;
@@ -2265,8 +2225,7 @@ cloudPill.addEventListener("click", async () => {
     refreshCloudUI();
     showActionToast("Signed out of OneDrive");
   } else {
-    cloudPill.dataset.state = "connecting";
-    cloudLabel.textContent = "OneDrive · signing in";
+    showActionToast("Signing in to OneDrive…", 3000);
     try { await cloud.signIn(); /* 跳转登录 */ }
     catch (e) {
       refreshCloudUI();

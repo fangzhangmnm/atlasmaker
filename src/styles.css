@@ -367,34 +367,166 @@ body[data-tool="eyedropper"] .obj.image { cursor: crosshair; }
 .hud .sep { opacity: 0.4; }
 .hud .version { opacity: 0.6; font-variant-numeric: tabular-nums; }
 
-/* Adjust 浮窗：dock 在 image 浮窗左边（image 默认右上 16px + 260 宽 → adjust 右移 292px） */
-#adjustPanel {
-  top: 60px;
-  right: 244px;
+/* 图片属性 panel 0.10.6 重做：折叠分区 / 紧凑 / 去圆角 / Adjust 合入 */
+#imagePanel { width: 200px; }
+.src-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid var(--line);
 }
+.src-text {
+  flex: 1;
+  font-size: 10.5px;
+  color: var(--ink-soft);
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+}
+.sect {
+  border-bottom: 1px solid var(--line);
+}
+.sect > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink);
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg-soft);
+}
+.sect > summary::-webkit-details-marker { display: none; }
+.sect > summary::before {
+  content: "▸";
+  font-size: 9px;
+  opacity: 0.6;
+  width: 9px;
+  transition: transform 0.1s;
+}
+.sect[open] > summary::before { transform: rotate(90deg); }
+.sect-body {
+  padding: 6px 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.srow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.srow-l {
+  font-size: 11px;
+  color: var(--ink-soft);
+  width: 38px;
+  flex: 0 0 auto;
+}
+.srow select, .srow input {
+  flex: 1;
+  font-size: 11px;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--ink);
+  min-width: 0;
+}
+.ico-row {
+  display: flex;
+  gap: 2px;
+}
+.ico-btn {
+  flex: 1;
+  height: 26px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+  border-radius: 3px;
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.ico-btn:hover { background: var(--bg-soft); border-color: var(--accent); }
+.ico-btn svg { width: 16px; height: 16px; }
+.ico-btn[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.ico-btn.danger { color: var(--danger); }
+.ico-btn.danger:hover { background: color-mix(in srgb, var(--danger) 12%, transparent); border-color: var(--danger); }
+.btn-row {
+  display: flex;
+  gap: 4px;
+}
+.btn-row.two-col > .btn { flex: 1; }
+.btn {
+  height: 24px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+  border-radius: 3px;
+  cursor: pointer;
+  padding: 0 8px;
+  font-size: 11px;
+  font: inherit;
+  font-size: 11px;
+}
+.btn:hover { background: var(--bg-soft); border-color: var(--accent); }
+.btn.primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.btn.primary:hover { filter: brightness(1.1); }
+.btn.ghost { background: transparent; }
+.btn.danger { color: var(--danger); border-color: var(--danger); background: transparent; }
+.btn.mini { height: 20px; font-size: 10px; padding: 0 6px; }
+
 .adjust-row {
   display: grid;
-  grid-template-columns: 64px 1fr 38px;
-  gap: 6px;
+  grid-template-columns: 38px 1fr 28px;
+  gap: 4px;
   align-items: center;
 }
-.adjust-row .row-label { font-size: 11px; color: var(--ink-soft); }
-.adjust-row input[type="range"] {
-  width: 100%;
-  accent-color: var(--accent);
-}
+.adjust-row .row-label { font-size: 10.5px; color: var(--ink-soft); }
+.adjust-row input[type="range"] { width: 100%; accent-color: var(--accent); height: 16px; }
 .adjust-value {
-  font-size: 11px;
+  font-size: 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color: var(--ink-soft);
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
-.adjust-hint {
-  font-size: 10px;
-  color: var(--ink-soft);
-  font-style: italic;
+
+.img-footer {
+  padding: 4px 8px 6px;
+  display: flex;
+  align-items: center;
 }
+.zord-row {
+  display: flex;
+  gap: 2px;
+  width: 100%;
+  align-items: center;
+}
+.zord-row .ico-btn { flex: 0 0 26px; }
+.zord-spacer { flex: 1; }
+
+/* lock 按钮在 src-row 里也是 ico-btn 大小 */
+.src-row .lock-btn {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+}
+.src-row .lock-btn svg { width: 13px; height: 13px; }
 
 /* 浮窗（viewport 属性） */
 .float-panel {

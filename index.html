@@ -117,10 +117,8 @@
         <span class="btp-label" id="btpLabel">Blender</span>
       </button>
 
-      <button class="btp-pill" id="cloudPill" type="button" title="OneDrive (click to sign in / out)">
-        <span class="btp-dot" aria-hidden="true"></span>
-        <span class="btp-label" id="cloudLabel">OneDrive</span>
-      </button>
+      <!-- 0.10.6：cloudPill 移除 —— save 按钮的多态 icon 已经显示云端状态了，
+           Sign in / out 进汉堡菜单 -->
       <!-- Save 按钮（多态）：innerHTML 由 JS updateSaveBtnState 根据 _saving / _cloudPushing /
            _dirty / cloud signed-in / cloud-dirty 切换 SVG。点击永远 = saveCurrentSession({explicit:true}) -->
       <button class="tool" id="cloudPushBtn" type="button" disabled></button>
@@ -149,6 +147,13 @@
           <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"></path>
         </svg>
         <span>Rename current board…</span>
+      </button>
+      <div class="menu-sep" role="separator"></div>
+      <button class="menu-item" id="menuCloudAuth" type="button" role="menuitem">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M18 10h-1.3A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path>
+        </svg>
+        <span id="menuCloudAuthLabel">Sign in to OneDrive</span>
       </button>
       <div class="menu-sep" role="separator"></div>
       <button class="menu-item" id="menuCheckUpdate" type="button" role="menuitem">
@@ -250,70 +255,120 @@
       </div>
     </div>
 
-    <!-- 图片属性浮窗 -->
+    <!-- 图片属性浮窗（0.10.6 重做：折叠分区 / 紧凑 / Adjust 合进来）-->
     <div id="imagePanel" class="float-panel hidden" role="dialog" aria-label="Image properties">
       <div class="float-panel-head">
         <span class="float-panel-title">Image</span>
         <button id="imagePanelClose" class="close-x" type="button" aria-label="Close">×</button>
       </div>
       <div class="float-panel-body">
-        <div class="row">
-          <span class="row-label">Source</span>
-          <span id="imgNaturalLabel" class="row-value">—</span>
+        <!-- Source 行（紧凑：dims · adjusted · size + lock 一并 inline）-->
+        <div class="src-row">
+          <span id="imgNaturalLabel" class="src-text">—</span>
+          <button id="imgLock" class="ico-btn lock-btn" type="button" aria-pressed="false" title="Lock — prevent move / rotate / resize"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 7.7-1.5"></path></svg></button>
         </div>
-        <div class="row">
-          <span class="row-label">Lock</span>
-          <button id="imgLock" class="lock-btn" type="button" aria-pressed="false" title="Lock image: prevent move / rotate / resize"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 7.7-1.5"></path></svg></button>
-        </div>
-        <label class="row"><span class="row-label">Interp</span>
-          <select id="imgInterp">
-            <option value="linear">Linear (default)</option>
-            <option value="nearest">Nearest (pixel art)</option>
-          </select>
-        </label>
-        <div class="row z-row">
-          <button class="z-btn" id="imgZTop" type="button" title="Bring to front (Ctrl+Shift+])">⤒</button>
-          <button class="z-btn" id="imgZUp" type="button" title="Bring forward (Ctrl+])">↑</button>
-          <button class="z-btn" id="imgZDown" type="button" title="Send backward (Ctrl+[)">↓</button>
-          <button class="z-btn" id="imgZBottom" type="button" title="Send to back (Ctrl+Shift+[)">⤓</button>
-        </div>
-        <div class="row z-row">
-          <button class="z-btn" id="imgRotL" type="button" title="Rotate 90° counter-clockwise">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M3 12a9 9 0 1 0 9-9"></path><polyline points="3 4 3 12 11 12"></polyline>
-            </svg>
-          </button>
-          <button class="z-btn" id="imgRotR" type="button" title="Rotate 90° clockwise">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M21 12a9 9 0 1 1-9-9"></path><polyline points="21 4 21 12 13 12"></polyline>
-            </svg>
-          </button>
-          <button class="z-btn" id="imgFlipH" type="button" title="Flip horizontal">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <polyline points="3 7 12 4 12 20 3 17 3 7" fill="currentColor" fill-opacity="0.18"></polyline>
-              <polyline points="21 7 12 4 12 20 21 17 21 7"></polyline>
-            </svg>
-          </button>
-          <button class="z-btn" id="imgFlipV" type="button" title="Flip vertical">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <polyline points="7 3 4 12 20 12 17 3 7 3" fill="currentColor" fill-opacity="0.18"></polyline>
-              <polyline points="7 21 4 12 20 12 17 21 7 21"></polyline>
-            </svg>
-          </button>
-        </div>
-        <div class="row">
-          <button class="sheet-action" id="imgCrop" type="button" title="Enter crop mode (drag handles inward, Enter to apply, Esc to cancel)">Crop…</button>
-          <button class="sheet-action ghost" id="imgResetCrop" type="button" title="Remove crop (restore full image)">Reset crop</button>
-        </div>
-        <div class="row">
-          <button class="sheet-action" id="imgAdjust" type="button" title="Color adjust (brightness / contrast / saturation / hue) — non-destructive, bake via Rasterize">Adjust…</button>
-          <button class="sheet-action" id="imgChroma" type="button" title="Remove background by color (chroma key) — destructive, undo-able">Remove BG…</button>
-        </div>
-        <div class="row">
-          <button class="sheet-action" id="imgRasterize" type="button" title="Bake current view (crop + resample) into a new image at a chosen resolution">Rasterize…</button>
-        </div>
-        <div class="row">
-          <button class="sheet-action ghost" id="imgDelete" type="button">Delete</button>
+
+        <!-- Transform 分区 -->
+        <details class="sect" open data-sect="transform">
+          <summary>Transform</summary>
+          <div class="sect-body">
+            <label class="srow"><span class="srow-l">Interp</span>
+              <select id="imgInterp">
+                <option value="linear">Linear</option>
+                <option value="nearest">Nearest (pixel art)</option>
+              </select>
+            </label>
+            <div class="ico-row" role="group" aria-label="Rotate / Flip">
+              <button class="ico-btn" id="imgRotL" type="button" title="Rotate −90°">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5a7 7 0 1 1-7 7"/><polyline points="12 1 12 5 8 5"/></svg>
+              </button>
+              <button class="ico-btn" id="imgRotR" type="button" title="Rotate +90°">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5a7 7 0 1 0 7 7"/><polyline points="12 1 12 5 16 5"/></svg>
+              </button>
+              <button class="ico-btn" id="imgFlipH" type="button" title="Flip horizontal">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="3" x2="12" y2="21" stroke-dasharray="2 2"/><path d="M10 7 3 12l7 5z"/><path d="M14 7l7 5-7 5z" fill="currentColor" fill-opacity="0.25"/></svg>
+              </button>
+              <button class="ico-btn" id="imgFlipV" type="button" title="Flip vertical">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3" y1="12" x2="21" y2="12" stroke-dasharray="2 2"/><path d="M7 10l5-7 5 7z"/><path d="M7 14l5 7 5-7z" fill="currentColor" fill-opacity="0.25"/></svg>
+              </button>
+            </div>
+            <div class="btn-row two-col">
+              <button class="btn" id="imgCrop" type="button" title="Crop (drag handles, Enter = apply, Esc = cancel)">Crop…</button>
+              <button class="btn ghost" id="imgResetCrop" type="button" title="Restore full image">Reset crop</button>
+            </div>
+          </div>
+        </details>
+
+        <!-- Color 分区（之前的浮窗 Adjust 合到这里）-->
+        <details class="sect" open data-sect="color">
+          <summary>Color</summary>
+          <div class="sect-body">
+            <label class="adjust-row">
+              <span class="row-label">Bright</span>
+              <input type="range" min="-100" max="100" step="1" value="0" data-filter="brightness">
+              <span class="adjust-value" data-for="brightness">0</span>
+            </label>
+            <label class="adjust-row">
+              <span class="row-label">Cntrst</span>
+              <input type="range" min="-100" max="100" step="1" value="0" data-filter="contrast">
+              <span class="adjust-value" data-for="contrast">0</span>
+            </label>
+            <label class="adjust-row">
+              <span class="row-label">Satur</span>
+              <input type="range" min="-100" max="100" step="1" value="0" data-filter="saturation">
+              <span class="adjust-value" data-for="saturation">0</span>
+            </label>
+            <label class="adjust-row">
+              <span class="row-label">Hue</span>
+              <input type="range" min="-180" max="180" step="1" value="0" data-filter="hue">
+              <span class="adjust-value" data-for="hue">0°</span>
+            </label>
+            <div class="btn-row">
+              <button class="btn ghost mini" id="adjustReset" type="button">Reset color</button>
+            </div>
+          </div>
+        </details>
+
+        <!-- Effects -->
+        <details class="sect" data-sect="effects">
+          <summary>Effects</summary>
+          <div class="sect-body">
+            <div class="btn-row">
+              <button class="btn" id="imgChroma" type="button" title="Remove background by color">Remove BG…</button>
+            </div>
+          </div>
+        </details>
+
+        <!-- Output -->
+        <details class="sect" data-sect="output">
+          <summary>Output</summary>
+          <div class="sect-body">
+            <div class="btn-row">
+              <button class="btn primary" id="imgRasterize" type="button" title="Bake current view to a new PNG">Rasterize…</button>
+            </div>
+          </div>
+        </details>
+
+        <!-- Footer：z-order 单独清晰一行 + Delete -->
+        <div class="img-footer">
+          <div class="zord-row" role="group" aria-label="Z-order">
+            <button class="ico-btn" id="imgZTop" type="button" title="Bring to front (Ctrl+Shift+])">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="13" width="10" height="6" fill="currentColor" fill-opacity="0.18"/><rect x="9" y="10" width="10" height="6" fill="currentColor" fill-opacity="0.18"/><rect x="11" y="5" width="10" height="6" stroke-width="2"/></svg>
+            </button>
+            <button class="ico-btn" id="imgZUp" type="button" title="Bring forward (Ctrl+])">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="13" width="10" height="6" fill="currentColor" fill-opacity="0.18"/><rect x="6" y="6" width="10" height="6" stroke-width="2"/><path d="M11 4l-1-1-1 1"/></svg>
+            </button>
+            <button class="ico-btn" id="imgZDown" type="button" title="Send backward (Ctrl+[)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="10" height="6" fill="currentColor" fill-opacity="0.18"/><rect x="9" y="13" width="10" height="6" stroke-width="2"/><path d="M11 21l-1 1-1-1"/></svg>
+            </button>
+            <button class="ico-btn" id="imgZBottom" type="button" title="Send to back (Ctrl+Shift+[)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="5" width="10" height="6" fill="currentColor" fill-opacity="0.18"/><rect x="9" y="8" width="10" height="6" fill="currentColor" fill-opacity="0.18"/><rect x="11" y="13" width="10" height="6" stroke-width="2"/></svg>
+            </button>
+            <span class="zord-spacer"></span>
+            <button class="ico-btn danger" id="imgDelete" type="button" title="Delete (X / Del)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6M14 11v6"/></svg>
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -372,39 +427,7 @@
       <button id="cropApply" type="button" class="primary">Apply</button>
     </div>
 
-    <!-- Adjust（调色 filter chain）浮窗：dock 右侧，跟图片浮窗并列 -->
-    <div id="adjustPanel" class="float-panel hidden" role="dialog" aria-label="Color adjust">
-      <div class="float-panel-head">
-        <span class="float-panel-title">Adjust</span>
-        <button id="adjustReset" class="sheet-action ghost" type="button" title="Reset all filters">Reset</button>
-        <button id="adjustPanelClose" class="close-x" type="button" aria-label="Close">×</button>
-      </div>
-      <div class="float-panel-body">
-        <label class="row adjust-row">
-          <span class="row-label">Brightness</span>
-          <input id="adjBrightness" type="range" min="-100" max="100" step="1" value="0" data-filter="brightness">
-          <span class="adjust-value" data-for="brightness">0</span>
-        </label>
-        <label class="row adjust-row">
-          <span class="row-label">Contrast</span>
-          <input id="adjContrast" type="range" min="-100" max="100" step="1" value="0" data-filter="contrast">
-          <span class="adjust-value" data-for="contrast">0</span>
-        </label>
-        <label class="row adjust-row">
-          <span class="row-label">Saturation</span>
-          <input id="adjSaturation" type="range" min="-100" max="100" step="1" value="0" data-filter="saturation">
-          <span class="adjust-value" data-for="saturation">0</span>
-        </label>
-        <label class="row adjust-row">
-          <span class="row-label">Hue</span>
-          <input id="adjHue" type="range" min="-180" max="180" step="1" value="0" data-filter="hue">
-          <span class="adjust-value" data-for="hue">0°</span>
-        </label>
-        <div class="row">
-          <span class="adjust-hint">Filters apply non-destructively. Rasterize to bake.</span>
-        </div>
-      </div>
-    </div>
+    <!-- 旧 #adjustPanel 浮窗已删（0.10.6 合入 #imagePanel 的 Color 分区） -->
 
     <!-- Rasterize 对话框 -->
     <div id="rasterBackdrop" class="backdrop hidden" aria-hidden="true"></div>
