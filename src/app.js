@@ -23,6 +23,10 @@ import { rasterizeImage } from "./raster.js";
 import * as crop from "./crop.js";
 import { filtersToCssString } from "./filters.js";
 import { applyChromaKey, applyChromaToImageData, sampleTopLeftPixel } from "./chromakey.js";
+import {
+  applyLevels, applyCurves, buildCurveLut, applyColorBalance,
+  bakeImageWithCanvasFilter, buildPreviewSource,
+} from "./canvas-filters.js";
 import { makeSwatchBlob, samplePixel, worldToNaturalPx, colorToHex, hexToColor } from "./swatch.js";
 
 const SCENE_FORMAT_VERSION = 1;
@@ -1069,9 +1073,8 @@ function refreshPanels() {
     // 显示原图分辨率 + blob 字节 —— 让用户能看出哪张是 4K 大块头白浪费内存
     const sizeStr = sel.blob ? formatBytes(sel.blob.size) : "—";
     const cropStr = sel.crop ? ` (cropped ${Math.round(sel.crop.w)}×${Math.round(sel.crop.h)})` : "";
-    const hasF = sel.filters && Object.values(sel.filters).some((v) => v && Math.abs(v) > 0.01);
-    const fStr = hasF ? " · adjusted" : "";
-    imgNaturalLabel.textContent = `${sel.naturalW}×${sel.naturalH}${cropStr}${fStr} · ${sizeStr}`;
+    // 「· adjusted」标签删（0.10.7）— Color 段的滑块自身已经体现状态，徽章是冗余信息
+    imgNaturalLabel.textContent = `${sel.naturalW}×${sel.naturalH}${cropStr} · ${sizeStr}`;
     imgLock.setAttribute("aria-pressed", sel.locked ? "true" : "false");
     imgLock.innerHTML = sel.locked ? ICON_LOCK_CLOSED : ICON_LOCK_OPEN;
     imgInterp.value = sel.interp || "linear";
@@ -1526,6 +1529,217 @@ chromaApplyBtn.addEventListener("click", async () => {
 });
 
 document.getElementById("imgChroma").addEventListener("click", () => openChromaDialog());
+
+// ----- Pixel filter dialogs（Levels / Curves / Color Balance）-----
+// Pattern：modal 内一张小预览 canvas（240px 边），滑块实时跑 pixel op → put 到预览。
+// Apply → 全分辨率 bake → 替换 obj.blob via scene.act（破坏式，Ctrl+Z 回原）。
+// 跟 chroma key 同款，只是 op 不同。canvas-filters.js 提供 op 函数 + bake helper。
+function _setupPixelFilterDialog({
+  dialog, backdrop, preview, applyBtn, cancelBtn, resetBtn,
+  sliders, paramsFn, applyFn, busyLabel, onUpdate,
+}) {
+  let state = null;
+
+  function close() {
+    backdrop.classList.add("hidden");
+    dialog.classList.add("hidden");
+    state = null;
+  }
+
+  async function open() {
+    const sel = scene.firstSelected();
+    if (!sel || sel.type !== "image" || !sel.blob) {
+      showActionToast("Select an image first", 2500);
+      return;
+    }
+    const { imageData, w, h } = await buildPreviewSource(sel.blob, 240);
+    preview.width = w;
+    preview.height = h;
+    state = { objId: sel.id, sourceImageData: imageData, ctx: preview.getContext("2d") };
+    for (const s of sliders) {
+      s.input.value = s.default;
+      s.label.textContent = s.format(s.default);
+    }
+    update();
+    backdrop.classList.remove("hidden");
+    dialog.classList.remove("hidden");
+  }
+
+  function update() {
+    if (!state) return;
+    const params = paramsFn();
+    const fresh = new ImageData(
+      new Uint8ClampedArray(state.sourceImageData.data),
+      state.sourceImageData.width,
+      state.sourceImageData.height,
+    );
+    applyFn(fresh, params);
+    state.ctx.clearRect(0, 0, fresh.width, fresh.height);
+    state.ctx.putImageData(fresh, 0, 0);
+    if (onUpdate) onUpdate(params);
+  }
+
+  for (const s of sliders) {
+    s.input.addEventListener("input", () => {
+      s.label.textContent = s.format(parseFloat(s.input.value));
+      update();
+    });
+  }
+  cancelBtn.addEventListener("click", close);
+  backdrop.addEventListener("click", close);
+  if (resetBtn) resetBtn.addEventListener("click", () => {
+    for (const s of sliders) {
+      s.input.value = s.default;
+      s.label.textContent = s.format(s.default);
+    }
+    update();
+  });
+  dialog.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); applyBtn.click(); }
+    else if (e.key === "Escape") { e.preventDefault(); close(); }
+  });
+
+  applyBtn.addEventListener("click", async () => {
+    if (!state) return;
+    const { objId } = state;
+    const params = paramsFn();
+    close();
+    const obj = scene.get(objId);
+    if (!obj || !obj.blob) return;
+    try {
+      const newBlob = await withBusy(busyLabel, () =>
+        bakeImageWithCanvasFilter(obj.blob, (id) => applyFn(id, params))
+      );
+      const newSrc = _newImageSrc(newBlob);
+      scene.act(() => scene.replaceImageBlob(objId, newBlob, newSrc));
+      showActionToast(`${busyLabel.replace(/…$/, "")} done`);
+    } catch (e) {
+      console.warn(`${busyLabel} failed`, e);
+      showActionToast(`Failed: ${e.message || e}`, 4000);
+    }
+  });
+
+  return { open };
+}
+
+const $id = (id) => document.getElementById(id);
+
+// Levels
+const _levelsDlg = _setupPixelFilterDialog({
+  dialog: $id("levelsDialog"),
+  backdrop: $id("levelsBackdrop"),
+  preview: $id("levelsPreview"),
+  applyBtn: $id("levelsApply"),
+  cancelBtn: $id("levelsCancel"),
+  sliders: [
+    { input: $id("lvInBlack"), label: $id("lvInBlackVal"), default: 0, format: (v) => `${v | 0}` },
+    { input: $id("lvInWhite"), label: $id("lvInWhiteVal"), default: 255, format: (v) => `${v | 0}` },
+    { input: $id("lvGamma"), label: $id("lvGammaVal"), default: 1, format: (v) => v.toFixed(2) },
+    { input: $id("lvOutBlack"), label: $id("lvOutBlackVal"), default: 0, format: (v) => `${v | 0}` },
+    { input: $id("lvOutWhite"), label: $id("lvOutWhiteVal"), default: 255, format: (v) => `${v | 0}` },
+  ],
+  paramsFn: () => ({
+    inBlack: parseInt($id("lvInBlack").value, 10),
+    inWhite: parseInt($id("lvInWhite").value, 10),
+    gamma: parseFloat($id("lvGamma").value),
+    outBlack: parseInt($id("lvOutBlack").value, 10),
+    outWhite: parseInt($id("lvOutWhite").value, 10),
+  }),
+  applyFn: (id, p) => applyLevels(id, p),
+  busyLabel: "Applying levels…",
+});
+$id("imgLevels").addEventListener("click", () => _levelsDlg.open());
+
+// Color Balance（midtones MVP）
+const _cbDlg = _setupPixelFilterDialog({
+  dialog: $id("cbDialog"),
+  backdrop: $id("cbBackdrop"),
+  preview: $id("cbPreview"),
+  applyBtn: $id("cbApply"),
+  cancelBtn: $id("cbCancel"),
+  sliders: [
+    { input: $id("cbCR"), label: $id("cbCRVal"), default: 0, format: (v) => `${v | 0}` },
+    { input: $id("cbMG"), label: $id("cbMGVal"), default: 0, format: (v) => `${v | 0}` },
+    { input: $id("cbYB"), label: $id("cbYBVal"), default: 0, format: (v) => `${v | 0}` },
+  ],
+  paramsFn: () => ({
+    cr: parseInt($id("cbCR").value, 10),
+    mg: parseInt($id("cbMG").value, 10),
+    yb: parseInt($id("cbYB").value, 10),
+  }),
+  applyFn: (id, p) => applyColorBalance(id, p),
+  busyLabel: "Applying color balance…",
+});
+$id("imgColorBalance").addEventListener("click", () => _cbDlg.open());
+
+// Curves（master MVP，5 个控制点 = 5 个滑块）
+// onUpdate 还顺手画一下 LUT 曲线到 #curveGraph 让用户看形状
+const _curveGraph = $id("curveGraph");
+const _curveGraphCtx = _curveGraph.getContext("2d");
+function _drawCurveGraph(yValues) {
+  const w = _curveGraph.width, h = _curveGraph.height;
+  _curveGraphCtx.clearRect(0, 0, w, h);
+  // 网格背景
+  _curveGraphCtx.strokeStyle = "rgba(127,127,127,0.25)";
+  _curveGraphCtx.lineWidth = 1;
+  for (let i = 1; i < 4; i++) {
+    const x = (w * i) / 4;
+    const y = (h * i) / 4;
+    _curveGraphCtx.beginPath(); _curveGraphCtx.moveTo(x, 0); _curveGraphCtx.lineTo(x, h); _curveGraphCtx.stroke();
+    _curveGraphCtx.beginPath(); _curveGraphCtx.moveTo(0, y); _curveGraphCtx.lineTo(w, y); _curveGraphCtx.stroke();
+  }
+  // identity 对角线
+  _curveGraphCtx.strokeStyle = "rgba(127,127,127,0.5)";
+  _curveGraphCtx.setLineDash([3, 3]);
+  _curveGraphCtx.beginPath(); _curveGraphCtx.moveTo(0, h); _curveGraphCtx.lineTo(w, 0); _curveGraphCtx.stroke();
+  _curveGraphCtx.setLineDash([]);
+  // 实际 LUT 曲线
+  const lut = buildCurveLut(yValues);
+  _curveGraphCtx.strokeStyle = "var(--accent)";
+  _curveGraphCtx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--accent") || "#8a481e";
+  _curveGraphCtx.lineWidth = 2;
+  _curveGraphCtx.beginPath();
+  for (let i = 0; i < 256; i++) {
+    const x = (i / 255) * w;
+    const y = h - (lut[i] / 255) * h;
+    if (i === 0) _curveGraphCtx.moveTo(x, y); else _curveGraphCtx.lineTo(x, y);
+  }
+  _curveGraphCtx.stroke();
+  // 控制点
+  _curveGraphCtx.fillStyle = "currentColor";
+  const xs = [32, 64, 128, 192, 224];
+  for (let i = 0; i < 5; i++) {
+    const x = (xs[i] / 255) * w;
+    const y = h - (yValues[i] / 255) * h;
+    _curveGraphCtx.beginPath(); _curveGraphCtx.arc(x, y, 3, 0, Math.PI * 2); _curveGraphCtx.fill();
+  }
+}
+const _curvesDlg = _setupPixelFilterDialog({
+  dialog: $id("curvesDialog"),
+  backdrop: $id("curvesBackdrop"),
+  preview: $id("curvesPreview"),
+  applyBtn: $id("curvesApply"),
+  cancelBtn: $id("curvesCancel"),
+  resetBtn: $id("curvesReset"),
+  sliders: [
+    { input: $id("cvY32"),  label: $id("cvY32Val"),  default: 32,  format: (v) => `${v | 0}` },
+    { input: $id("cvY64"),  label: $id("cvY64Val"),  default: 64,  format: (v) => `${v | 0}` },
+    { input: $id("cvY128"), label: $id("cvY128Val"), default: 128, format: (v) => `${v | 0}` },
+    { input: $id("cvY192"), label: $id("cvY192Val"), default: 192, format: (v) => `${v | 0}` },
+    { input: $id("cvY224"), label: $id("cvY224Val"), default: 224, format: (v) => `${v | 0}` },
+  ],
+  paramsFn: () => [
+    parseInt($id("cvY32").value, 10),
+    parseInt($id("cvY64").value, 10),
+    parseInt($id("cvY128").value, 10),
+    parseInt($id("cvY192").value, 10),
+    parseInt($id("cvY224").value, 10),
+  ],
+  applyFn: (id, ys) => applyCurves(id, ys),
+  onUpdate: (ys) => _drawCurveGraph(ys),
+  busyLabel: "Applying curves…",
+});
+$id("imgCurves").addEventListener("click", () => _curvesDlg.open());
 
 // ----- z-order 按钮（两个 panel 共用一套 handler） -----
 function wireZBtn(btnId, fn) {

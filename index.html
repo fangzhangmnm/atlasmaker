@@ -334,6 +334,11 @@
           <summary>Effects</summary>
           <div class="sect-body">
             <div class="btn-row">
+              <button class="btn" id="imgLevels" type="button" title="Levels (input black/white/gamma → output black/white)">Levels…</button>
+              <button class="btn" id="imgCurves" type="button" title="Curves (master tonal curve via 5 control points)">Curves…</button>
+            </div>
+            <div class="btn-row">
+              <button class="btn" id="imgColorBalance" type="button" title="Color Balance (midtones: cyan-red / magenta-green / yellow-blue)">Color Bal…</button>
               <button class="btn" id="imgChroma" type="button" title="Remove background by color">Remove BG…</button>
             </div>
           </div>
@@ -417,6 +422,66 @@
       <div class="form-actions">
         <button id="chromaCancel" type="button" class="ghost">Cancel</button>
         <button id="chromaApply" type="button" class="primary">Apply</button>
+      </div>
+    </div>
+
+    <!-- Levels 对话框 -->
+    <div id="levelsBackdrop" class="backdrop hidden" aria-hidden="true"></div>
+    <div id="levelsDialog" class="form-dialog hidden" role="dialog" aria-modal="true">
+      <div class="form-head">Levels</div>
+      <div class="form-body">
+        <div class="chroma-preview-wrap">
+          <canvas id="levelsPreview" class="chroma-preview"></canvas>
+        </div>
+        <label class="adjust-row"><span class="row-label">In black</span><input id="lvInBlack" type="range" min="0" max="254" step="1" value="0"><span class="adjust-value" id="lvInBlackVal">0</span></label>
+        <label class="adjust-row"><span class="row-label">In white</span><input id="lvInWhite" type="range" min="1" max="255" step="1" value="255"><span class="adjust-value" id="lvInWhiteVal">255</span></label>
+        <label class="adjust-row"><span class="row-label">Gamma</span><input id="lvGamma" type="range" min="0.1" max="3" step="0.01" value="1"><span class="adjust-value" id="lvGammaVal">1.00</span></label>
+        <label class="adjust-row"><span class="row-label">Out black</span><input id="lvOutBlack" type="range" min="0" max="255" step="1" value="0"><span class="adjust-value" id="lvOutBlackVal">0</span></label>
+        <label class="adjust-row"><span class="row-label">Out white</span><input id="lvOutWhite" type="range" min="0" max="255" step="1" value="255"><span class="adjust-value" id="lvOutWhiteVal">255</span></label>
+      </div>
+      <div class="form-actions">
+        <button id="levelsCancel" type="button" class="ghost">Cancel</button>
+        <button id="levelsApply" type="button" class="primary">Apply</button>
+      </div>
+    </div>
+
+    <!-- Curves 对话框 -->
+    <div id="curvesBackdrop" class="backdrop hidden" aria-hidden="true"></div>
+    <div id="curvesDialog" class="form-dialog hidden" role="dialog" aria-modal="true">
+      <div class="form-head">Curves (master)</div>
+      <div class="form-body">
+        <div class="chroma-preview-wrap">
+          <canvas id="curvesPreview" class="chroma-preview"></canvas>
+        </div>
+        <canvas id="curveGraph" class="curve-graph" width="200" height="120"></canvas>
+        <label class="adjust-row"><span class="row-label">@32</span><input id="cvY32" type="range" min="0" max="255" step="1" value="32"><span class="adjust-value" id="cvY32Val">32</span></label>
+        <label class="adjust-row"><span class="row-label">@64</span><input id="cvY64" type="range" min="0" max="255" step="1" value="64"><span class="adjust-value" id="cvY64Val">64</span></label>
+        <label class="adjust-row"><span class="row-label">@128</span><input id="cvY128" type="range" min="0" max="255" step="1" value="128"><span class="adjust-value" id="cvY128Val">128</span></label>
+        <label class="adjust-row"><span class="row-label">@192</span><input id="cvY192" type="range" min="0" max="255" step="1" value="192"><span class="adjust-value" id="cvY192Val">192</span></label>
+        <label class="adjust-row"><span class="row-label">@224</span><input id="cvY224" type="range" min="0" max="255" step="1" value="224"><span class="adjust-value" id="cvY224Val">224</span></label>
+      </div>
+      <div class="form-actions">
+        <button id="curvesCancel" type="button" class="ghost">Cancel</button>
+        <button id="curvesReset" type="button" class="ghost">Reset</button>
+        <button id="curvesApply" type="button" class="primary">Apply</button>
+      </div>
+    </div>
+
+    <!-- Color Balance 对话框 -->
+    <div id="cbBackdrop" class="backdrop hidden" aria-hidden="true"></div>
+    <div id="cbDialog" class="form-dialog hidden" role="dialog" aria-modal="true">
+      <div class="form-head">Color Balance · midtones</div>
+      <div class="form-body">
+        <div class="chroma-preview-wrap">
+          <canvas id="cbPreview" class="chroma-preview"></canvas>
+        </div>
+        <label class="adjust-row"><span class="row-label">Cyan-Red</span><input id="cbCR" type="range" min="-100" max="100" step="1" value="0"><span class="adjust-value" id="cbCRVal">0</span></label>
+        <label class="adjust-row"><span class="row-label">Mag-Grn</span><input id="cbMG" type="range" min="-100" max="100" step="1" value="0"><span class="adjust-value" id="cbMGVal">0</span></label>
+        <label class="adjust-row"><span class="row-label">Yel-Blu</span><input id="cbYB" type="range" min="-100" max="100" step="1" value="0"><span class="adjust-value" id="cbYBVal">0</span></label>
+      </div>
+      <div class="form-actions">
+        <button id="cbCancel" type="button" class="ghost">Cancel</button>
+        <button id="cbApply" type="button" class="primary">Apply</button>
       </div>
     </div>
 

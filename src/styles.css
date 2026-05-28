@@ -1270,6 +1270,14 @@ body[data-mode="gallery"] .crop-toolbar { display: none !important; }
   border-radius: 4px;
   image-rendering: pixelated;
 }
+/* Curves modal 里的曲线 graph */
+.curve-graph {
+  display: block;
+  margin: 4px auto;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
 .form-mini-btn {
   padding: 4px 10px;
   border-radius: 6px;
